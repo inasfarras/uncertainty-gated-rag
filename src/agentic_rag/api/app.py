@@ -1,16 +1,16 @@
 """FastAPI application factory."""
 
+from agentic_rag.api.routes import router
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from agentic_rag.api.routes import router
 
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
         title="Agentic RAG",
-        description="Agentic RAG system for advanced information retrieval and generation",
+        description="Agentic RAG system for advanced information retrieval "
+        "and generation",
         version="0.1.0",
     )
 

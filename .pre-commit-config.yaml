@@ -25,3 +25,7 @@ repos:
         additional_dependencies:
           - types-PyYAML
           - types-requests
+          - pydantic
+          - pydantic-settings
+          - loguru
+          - fastapi
