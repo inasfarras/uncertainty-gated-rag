@@ -1,8 +1,9 @@
 """Timing utilities for measuring latency and performance."""
 
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Self
 
 
 class Timer:
@@ -70,7 +71,7 @@ class Timer:
         self._times.clear()
 
     @contextmanager
-    def time_block(self, name: str):
+    def time_block(self, name: str) -> Generator[Self, None, None]:
         """
         Context manager for timing a code block.
 
@@ -87,7 +88,7 @@ class Timer:
             self.stop(name)
 
 
-def measure_time(func):
+def measure_time(func: Any) -> Any:
     """
     Decorator to measure execution time of a function.
 
@@ -98,7 +99,7 @@ def measure_time(func):
         Decorated function that prints execution time
     """
 
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         start_time = time.perf_counter()
         result = func(*args, **kwargs)
         end_time = time.perf_counter()
@@ -109,7 +110,7 @@ def measure_time(func):
     return wrapper
 
 
-async def measure_async_time(func):
+async def measure_async_time(func: Any) -> Any:
     """
     Decorator to measure execution time of an async function.
 
@@ -120,7 +121,7 @@ async def measure_async_time(func):
         Decorated async function that prints execution time
     """
 
-    async def wrapper(*args, **kwargs):
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
         start_time = time.perf_counter()
         result = await func(*args, **kwargs)
         end_time = time.perf_counter()
@@ -189,7 +190,7 @@ class LatencyTracker:
         self._measurements.clear()
 
     @contextmanager
-    def measure(self):
+    def measure(self) -> Generator[Self, None, None]:
         """
         Context manager to measure and record latency.
 
@@ -288,3 +289,11 @@ class Stopwatch:
     def is_running(self) -> bool:
         """Check if stopwatch is running."""
         return self._running
+
+
+@contextmanager
+def timer():
+    """A context manager to measure execution time."""
+    start_time = time.perf_counter()
+    # Yield a function that returns the elapsed time in milliseconds
+    yield lambda: (time.perf_counter() - start_time) * 1000

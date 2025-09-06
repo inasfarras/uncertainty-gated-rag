@@ -1,21 +1,20 @@
 .PHONY: install format lint test clean run-api run-baseline run-agent
 
 install:
-	poetry install --with dev
-	poetry run python -m spacy download en_core_web_sm
-	poetry run pre-commit install
+	poetry install
+	poetry run python -m spacy download en_core_web_sm || true
 
 format:
-	poetry run black src tests
-	poetry run ruff --fix src tests
+	poetry run black .
 
 lint:
-	poetry run black --check src tests
-	poetry run ruff src tests
-	poetry run mypy src tests
+	poetry run ruff check . --fix
+
+type:
+	poetry run mypy src/agentic_rag -q
 
 test:
-	poetry run pytest -v --cov=src --cov-report=term-missing tests/
+	poetry run pytest
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
@@ -34,8 +33,21 @@ clean:
 run-api:
 	poetry run uvicorn agentic_rag.api.app:create_app --factory --host $(API_HOST) --port $(API_PORT) --reload
 
+ingest:
+	python -m agentic_rag.ingest.ingest --input-dir src/agentic_rag/data/corpus --out-dir artifacts/faiss
+
 run-baseline:
-	poetry run python -m agentic_rag.baseline.run
+	python -m agentic_rag.eval.runner
 
 run-agent:
-	poetry run python -m agentic_rag.agent.run
+	python -m agentic_rag.eval.runner --gate-on
+
+smoke-online:
+	python -m agentic_rag.ingest.ingest --input data/corpus --out artifacts/faiss --backend openai
+	python -m agentic_rag.eval.runner --dataset data/sample.jsonl --system baseline --gate-off --n 3
+	python -m agentic_rag.eval.runner --dataset data/sample.jsonl --system agent --gate-on --n 3
+
+smoke-mock:
+	python -m agentic_rag.ingest.ingest --input data/corpus --out artifacts/faiss --backend mock
+	python -m agentic_rag.eval.runner --dataset data/sample.jsonl --system baseline --gate-off --n 3
+	python -m agentic_rag.eval.runner --dataset data/sample.jsonl --system agent --gate-on --n 3

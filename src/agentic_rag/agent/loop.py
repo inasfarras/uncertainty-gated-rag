@@ -1,279 +1,218 @@
-"""Main agentic RAG orchestration loop."""
+import json
+import uuid
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List
 
-from typing import Any, Dict, List, Optional
+import numpy as np
+import typer
 
-from pydantic import BaseModel
-
-from agentic_rag.agent.gate import UncertaintyGate
-from agentic_rag.agent.switcher import RetrieverSwitcher
-from agentic_rag.models.adapter import BaseLLMAdapter, LLMMessage, LLMResponse
-from agentic_rag.retriever.vector import RetrievalContext, VectorRetriever
-
-
-class AgentState(BaseModel):
-    """State of the agentic RAG agent during processing."""
-
-    query: str
-    round_number: int
-    max_rounds: int
-    contexts: List[RetrievalContext] = []
-    responses: List[LLMResponse] = []
-    uncertainty_scores: List[float] = []
-    retrieval_decisions: List[str] = []
-    metadata: Dict[str, Any] = {}
+from agentic_rag.config import settings
+from agentic_rag.eval.signals import faithfulness_score, overlap_ratio
+from agentic_rag.models.adapter import ChatMessage, OpenAIAdapter
+from agentic_rag.retriever.vector import ContextChunk, VectorRetriever
+from agentic_rag.utils.encoder import NpEncoder
+from agentic_rag.utils.timing import timer
 
 
-class AgentResponse(BaseModel):
-    """Final response from the agentic RAG agent."""
+def is_global_question(q: str) -> bool:
+    try:
+        import spacy
 
-    query: str
-    answer: str
-    confidence: float
-    total_rounds: int
-    contexts_used: List[RetrievalContext]
-    reasoning_trace: List[str]
-    metadata: Dict[str, Any] = {}
+        nlp = spacy.load("en_core_web_sm")
+        doc = nlp(q)
+        return len(q.split()) >= 20 or len(doc.ents) >= 2
+    except Exception:
+        return len(q.split()) >= 20
 
 
-class AgenticRAGLoop:
-    """Main orchestrator for agentic RAG processing."""
+def build_prompt(contexts: List[ContextChunk], question: str) -> List[ChatMessage]:
+    """Builds a prompt for the LLM."""
+    context_str = "\n\n".join([c["text"] for c in contexts])
+    content = (
+        f"Answer the following question based only on the provided context. "
+        f"If the context does not contain the answer, say 'I don't know'.\n\n"
+        f"CONTEXT:\n{context_str}\n\n"
+        f"QUESTION: {question}\n\n"
+        f"ANSWER:"
+    )
+    return [ChatMessage(role="user", content=content)]
 
-    def __init__(
-        self,
-        llm_adapter: BaseLLMAdapter,
-        retriever: VectorRetriever,
-        uncertainty_gate: UncertaintyGate,
-        switcher: Optional[RetrieverSwitcher] = None,
-        max_rounds: int = 2,
-        max_tokens_total: int = 3500,
-        low_budget_tokens: int = 500,
-    ) -> None:
-        """
-        Initialize agentic RAG loop.
 
-        Args:
-            llm_adapter: LLM adapter for generation
-            retriever: Vector retriever for context retrieval
-            uncertainty_gate: Gate for uncertainty assessment
-            switcher: Optional retriever switcher for strategy selection
-            max_rounds: Maximum number of RAG rounds
-            max_tokens_total: Total token budget
-            low_budget_tokens: Low budget threshold for token management
-        """
-        self.llm_adapter = llm_adapter
-        self.retriever = retriever
-        self.uncertainty_gate = uncertainty_gate
-        self.switcher = switcher
-        self.max_rounds = max_rounds
-        self.max_tokens_total = max_tokens_total
-        self.low_budget_tokens = low_budget_tokens
+class GateAction(str, Enum):
+    STOP = "STOP"
+    STOP_LOW_CONF = "STOP_LOW_CONF"
+    RETRIEVE_MORE = "RETRIEVE_MORE"
+    SWITCH_GRAPH = "SWITCH_GRAPH"  # Not implemented
+    REFLECT = "REFLECT"  # Not implemented
 
-    async def process_query(
-        self,
-        query: str,
-        initial_context: Optional[RetrievalContext] = None,
-        **kwargs,
-    ) -> AgentResponse:
-        """
-        Process a query through the agentic RAG loop.
 
-        Args:
-            query: Input query to process
-            initial_context: Optional initial retrieval context
-            **kwargs: Additional processing parameters
+class BaseAgent:
+    def __init__(self, system: str = "base"):
+        self.system = system
+        self.retriever = VectorRetriever(settings.FAISS_INDEX_PATH)
+        self.llm = OpenAIAdapter()
+        self.log_dir = Path("logs")
+        self.log_dir.mkdir(exist_ok=True)
 
-        Returns:
-            Agent response with answer and metadata
-        """
-        # TODO: Implement main processing loop
-        raise NotImplementedError("Query processing not yet implemented")
+    def _log_jsonl(self, data: Dict[str, Any], log_path: Path):
+        with open(log_path, "a") as f:
+            f.write(json.dumps(data, cls=NpEncoder) + "\n")
 
-    async def _execute_round(
-        self,
-        state: AgentState,
-        context: Optional[RetrievalContext] = None,
-    ) -> AgentState:
-        """
-        Execute a single round of the RAG process.
 
-        Args:
-            state: Current agent state
-            context: Optional retrieval context for this round
+class Baseline(BaseAgent):
+    def __init__(self):
+        super().__init__(system="baseline")
 
-        Returns:
-            Updated agent state
-        """
-        # TODO: Implement single round execution
-        raise NotImplementedError("Round execution not yet implemented")
+    def answer(self, question: str, qid: str | None = None) -> Dict[str, Any]:
+        qid = qid or str(uuid.uuid4())
+        log_path = self.log_dir / f"{self.system}_{qid}.jsonl"
 
-    async def _retrieve_context(
-        self,
-        query: str,
-        state: AgentState,
-    ) -> RetrievalContext:
-        """
-        Retrieve context for the current query and state.
+        tokens_left = settings.MAX_TOKENS_TOTAL
+        k = settings.RETRIEVAL_K
 
-        Args:
-            query: Query string
-            state: Current agent state
+        contexts = self.retriever.retrieve(question, k=k)
+        prompt = build_prompt(contexts, question)
 
-        Returns:
-            Retrieved context
-        """
-        # TODO: Implement context retrieval with switcher logic
-        raise NotImplementedError("Context retrieval not yet implemented")
+        with timer() as t:
+            draft, usage = self.llm.chat(messages=prompt)
+        latency_ms = t()
 
-    async def _generate_response(
-        self,
-        query: str,
-        context: RetrievalContext,
-        state: AgentState,
-    ) -> LLMResponse:
-        """
-        Generate response using LLM with retrieved context.
+        tokens_left -= usage["total_tokens"]
 
-        Args:
-            query: Original query
-            context: Retrieved context
-            state: Current agent state
+        context_texts = [c["text"] for c in contexts]
+        o = overlap_ratio(draft, context_texts)
+        f = faithfulness_score(question, context_texts, draft)
+        if f is None:
+            f = min(1.0, 0.6 + 0.4 * o)
 
-        Returns:
-            LLM response
-        """
-        # TODO: Implement response generation
-        raise NotImplementedError("Response generation not yet implemented")
-
-    def _assess_uncertainty(
-        self,
-        response: LLMResponse,
-        context: RetrievalContext,
-        state: AgentState,
-    ) -> float:
-        """
-        Assess uncertainty in the generated response.
-
-        Args:
-            response: Generated LLM response
-            context: Retrieved context
-            state: Current agent state
-
-        Returns:
-            Uncertainty score
-        """
-        # TODO: Implement uncertainty assessment
-        return self.uncertainty_gate.assess_uncertainty(
-            response.content,
-            context,
-            state.metadata,
-        )
-
-    def _should_continue(
-        self,
-        uncertainty_score: float,
-        state: AgentState,
-        tokens_used: int,
-    ) -> bool:
-        """
-        Determine if another round should be executed.
-
-        Args:
-            uncertainty_score: Current uncertainty score
-            state: Current agent state
-            tokens_used: Total tokens used so far
-
-        Returns:
-            True if another round should be executed
-        """
-        # Check round limit
-        if state.round_number >= self.max_rounds:
-            return False
-
-        # Check token budget
-        if tokens_used >= self.max_tokens_total:
-            return False
-
-        # Check uncertainty gate
-        return self.uncertainty_gate.should_continue(
-            uncertainty_score,
-            state.round_number,
-            tokens_used,
-        )
-
-    def _build_prompt(
-        self,
-        query: str,
-        context: RetrievalContext,
-        state: AgentState,
-    ) -> List[LLMMessage]:
-        """
-        Build prompt messages for LLM generation.
-
-        Args:
-            query: Original query
-            context: Retrieved context
-            state: Current agent state
-
-        Returns:
-            List of prompt messages
-        """
-        # TODO: Implement prompt building
-        raise NotImplementedError("Prompt building not yet implemented")
-
-    def _extract_final_answer(
-        self,
-        responses: List[LLMResponse],
-        state: AgentState,
-    ) -> str:
-        """
-        Extract final answer from multiple responses.
-
-        Args:
-            responses: List of LLM responses
-            state: Final agent state
-
-        Returns:
-            Final answer string
-        """
-        # TODO: Implement answer extraction/synthesis
-        if responses:
-            return responses[-1].content
-        return "No answer generated"
-
-    def _calculate_confidence(
-        self,
-        uncertainty_scores: List[float],
-        state: AgentState,
-    ) -> float:
-        """
-        Calculate overall confidence score.
-
-        Args:
-            uncertainty_scores: List of uncertainty scores from each round
-            state: Final agent state
-
-        Returns:
-            Confidence score (0.0 to 1.0)
-        """
-        if not uncertainty_scores:
-            return 0.0
-
-        # Use inverse of final uncertainty as confidence
-        final_uncertainty = uncertainty_scores[-1]
-        return max(0.0, 1.0 - final_uncertainty)
-
-    def get_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about the agent configuration.
-
-        Returns:
-            Dictionary with agent statistics
-        """
-        return {
-            "llm_model": self.llm_adapter.model_name,
-            "retriever_type": type(self.retriever).__name__,
-            "has_switcher": self.switcher is not None,
-            "max_rounds": self.max_rounds,
-            "max_tokens_total": self.max_tokens_total,
-            "low_budget_tokens": self.low_budget_tokens,
+        step_log = {
+            "qid": qid,
+            "round": 1,
+            "action": "STOP",
+            "k": k,
+            "mode": "vector",
+            "f": f,
+            "o": o,
+            "tokens_left": tokens_left,
+            "usage": usage,
+            "latency_ms": latency_ms,
+            "prompt": [m.content for m in prompt],
+            "draft": draft,
         }
+        self._log_jsonl(step_log, log_path)
+
+        summary_log = {
+            "qid": qid,
+            "final_answer": draft,
+            "final_f": f,
+            "final_o": o,
+            "rounds": 1,
+            "total_tokens": usage["total_tokens"],
+            "p50_latency_ms": latency_ms,
+            "latencies": [latency_ms],
+        }
+        self._log_jsonl(summary_log, log_path)
+
+        return summary_log
+
+
+class Agent(BaseAgent):
+    def __init__(self, gate_on: bool = True):
+        super().__init__(system="agent")
+        self.gate_on = gate_on
+
+    def _gate(self, f: float, o: float) -> GateAction:
+        if f >= settings.FAITHFULNESS_TAU and o >= settings.OVERLAP_TAU:
+            return GateAction.STOP
+        return GateAction.RETRIEVE_MORE
+
+    def answer(self, question: str, qid: str | None = None) -> Dict[str, Any]:
+        qid = qid or str(uuid.uuid4())
+        log_path = self.log_dir / f"{self.system}_{qid}.jsonl"
+
+        # Initialize state
+        r = 0
+        k = settings.RETRIEVAL_K
+        mode = "vector"
+        tokens_left = settings.MAX_TOKENS_TOTAL
+        total_tokens = 0
+        latencies = []
+
+        while r < settings.MAX_ROUNDS and tokens_left > 0:
+            r += 1
+
+            contexts = self.retriever.retrieve(question, k=k)
+            prompt = build_prompt(contexts, question)
+
+            with timer() as t:
+                draft, usage = self.llm.chat(messages=prompt)
+            latency_ms = t()
+            latencies.append(latency_ms)
+
+            total_tokens += usage["total_tokens"]
+            tokens_left -= usage["total_tokens"]
+
+            context_texts = [c["text"] for c in contexts]
+            o = overlap_ratio(draft, context_texts)
+            f = faithfulness_score(question, context_texts, draft)
+            if f is None:
+                f = min(1.0, 0.6 + 0.4 * o)
+
+            action = self._gate(f, o) if self.gate_on else GateAction.STOP
+
+            step_log = {
+                "qid": qid,
+                "round": r,
+                "action": action.value,
+                "k": k,
+                "mode": mode,
+                "f": f,
+                "o": o,
+                "tokens_left": tokens_left,
+                "usage": usage,
+                "latency_ms": latency_ms,
+                "prompt": [m.content for m in prompt],
+                "draft": draft,
+            }
+            self._log_jsonl(step_log, log_path)
+
+            if action == GateAction.STOP:
+                break
+
+            if action == GateAction.RETRIEVE_MORE:
+                k = min(32, k + 4)
+
+        p50_latency_ms = np.percentile(latencies, 50) if latencies else 0
+
+        summary_log = {
+            "qid": qid,
+            "final_answer": draft,
+            "final_f": f,
+            "final_o": o,
+            "rounds": r,
+            "total_tokens": total_tokens,
+            "p50_latency_ms": p50_latency_ms,
+            "latencies": latencies,
+        }
+        self._log_jsonl(summary_log, log_path)
+
+        return summary_log
+
+
+def main():
+    """A small CLI to run 3 hardcoded queries."""
+    agent = Agent()
+    questions = [
+        "What are cats?",
+        "What are dogs?",
+        "What are birds?",
+    ]
+    for q in questions:
+        print(f"--- Answering question: {q} ---")
+        agent.answer(q)
+        print("-" * (len(q) + 26))
+
+
+if __name__ == "__main__":
+    typer.run(main)

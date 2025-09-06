@@ -1,7 +1,7 @@
 """BGE-based reranker for improving retrieval quality."""
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel
 
@@ -20,7 +20,7 @@ class RerankResult(BaseModel):
 class BaseReranker(ABC):
     """Abstract base class for rerankers."""
 
-    def __init__(self, model_name: str, **kwargs) -> None:
+    def __init__(self, model_name: str, **kwargs: dict) -> None:
         """
         Initialize reranker.
 
@@ -100,7 +100,7 @@ class BGEReranker(BaseReranker):
         model_name: str = "BAAI/bge-reranker-base",
         device: Optional[str] = None,
         batch_size: int = 32,
-        **kwargs,
+        **kwargs: dict,
     ) -> None:
         """
         Initialize BGE reranker.
@@ -179,7 +179,7 @@ class CrossEncoderReranker(BaseReranker):
         model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
         device: Optional[str] = None,
         batch_size: int = 32,
-        **kwargs,
+        **kwargs: dict,
     ) -> None:
         """
         Initialize cross-encoder reranker.
@@ -234,7 +234,7 @@ class CrossEncoderReranker(BaseReranker):
 def create_reranker(
     model_type: str,
     model_name: Optional[str] = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> BaseReranker:
     """
     Factory function to create rerankers.
@@ -252,9 +252,17 @@ def create_reranker(
     """
     if model_type == "bge":
         default_model = "BAAI/bge-reranker-base"
-        return BGEReranker(model_name or default_model, **kwargs)
+        device = kwargs.pop("device", None)
+        batch_size = kwargs.pop("batch_size", 32)
+        return BGEReranker(
+            model_name or default_model, device=device, batch_size=batch_size, **kwargs
+        )
     elif model_type == "cross-encoder":
         default_model = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-        return CrossEncoderReranker(model_name or default_model, **kwargs)
+        device = kwargs.pop("device", None)
+        batch_size = kwargs.pop("batch_size", 32)
+        return CrossEncoderReranker(
+            model_name or default_model, device=device, batch_size=batch_size, **kwargs
+        )
     else:
         raise ValueError(f"Unsupported reranker type: {model_type}")

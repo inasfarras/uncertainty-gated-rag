@@ -1,341 +1,141 @@
-"""Experiment runner for evaluating RAG systems over datasets."""
-
+import json
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Literal, Optional, cast
 
-from pydantic import BaseModel
+import pandas as pd
+import typer
+from rich.console import Console
+from rich.table import Table
 
-from agentic_rag.agent.loop import AgenticRAGLoop, AgentResponse
-from agentic_rag.eval.ragas_wrap import EvaluationResult, RAGASEvaluator
-from agentic_rag.utils.jsonl import JSONLWriter
-from agentic_rag.utils.timing import Timer
+from agentic_rag.agent.loop import Agent, Baseline
+from agentic_rag.config import settings
 
-
-class ExperimentConfig(BaseModel):
-    """Configuration for an evaluation experiment."""
-
-    name: str
-    description: str
-    dataset_name: str
-    model_config: Dict[str, Any]
-    retrieval_config: Dict[str, Any]
-    agent_config: Dict[str, Any]
-    evaluation_config: Dict[str, Any] = {}
-    output_dir: str = "./artifacts/experiments"
-    max_samples: Optional[int] = None
-    random_seed: int = 42
+app = typer.Typer()
+console = Console()
 
 
-class ExperimentResult(BaseModel):
-    """Result from a single experiment run."""
-
-    config: ExperimentConfig
-    query: str
-    ground_truth: Optional[str] = None
-    agent_response: AgentResponse
-    evaluation: EvaluationResult
-    timing: Dict[str, float]
-    metadata: Dict[str, Any] = {}
-
-
-class ExperimentSummary(BaseModel):
-    """Summary statistics from an experiment."""
-
-    config: ExperimentConfig
-    total_samples: int
-    successful_samples: int
-    failed_samples: int
-    avg_faithfulness: Optional[float] = None
-    avg_context_precision: Optional[float] = None
-    avg_context_recall: Optional[float] = None
-    avg_answer_relevancy: Optional[float] = None
-    avg_response_time: float
-    avg_total_rounds: float
-    avg_confidence: float
-    metadata: Dict[str, Any] = {}
+def override_settings(
+    tau_f: Optional[float], tau_o: Optional[float], max_rounds: Optional[int]
+):
+    if tau_f is not None:
+        settings.FAITHFULNESS_TAU = tau_f
+    if tau_o is not None:
+        settings.OVERLAP_TAU = tau_o
+    if max_rounds is not None:
+        settings.MAX_ROUNDS = max_rounds
 
 
-class ExperimentRunner:
-    """Runner for conducting RAG evaluation experiments."""
+_dataset_option = typer.Option(
+    ..., "--dataset", help="Path to a JSONL dataset with {'id', 'question'}."
+)
+_n_option = typer.Option(0, "--n", help="Number of items to process. 0 for all.")
+_system_option = typer.Option(
+    "baseline", "--system", help="System to run: 'baseline' or 'agent'."
+)
+_backend_option = typer.Option(
+    settings.EMBED_BACKEND, "--backend", help="Backend to use: 'openai' or 'mock'."
+)
+_gate_on_option = typer.Option(
+    True, "--gate-on/--gate-off", help="Enable or disable the agentic gate."
+)
+_max_rounds_option = typer.Option(
+    None, "--max-rounds", help="Max rounds for the agent."
+)
+_tau_f_option = typer.Option(None, "--tau-f", help="Faithfulness threshold.")
+_tau_o_option = typer.Option(None, "--tau-o", help="Overlap threshold.")
 
-    def __init__(
-        self,
-        agent: AgenticRAGLoop,
-        evaluator: RAGASEvaluator,
-        output_dir: Union[str, Path] = "./artifacts/experiments",
-    ) -> None:
-        """
-        Initialize experiment runner.
 
-        Args:
-            agent: Agentic RAG agent to evaluate
-            evaluator: Evaluation metrics calculator
-            output_dir: Directory for experiment outputs
-        """
-        self.agent = agent
-        self.evaluator = evaluator
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+@app.command()
+def run(
+    dataset: Path = _dataset_option,
+    n: int = _n_option,
+    system: str = _system_option,
+    backend: str = _backend_option,
+    gate_on: bool = _gate_on_option,
+    max_rounds: Optional[int] = _max_rounds_option,
+    tau_f: Optional[float] = _tau_f_option,
+    tau_o: Optional[float] = _tau_o_option,
+):
+    """Runs an evaluation of the Agentic RAG system."""
 
-    async def run_experiment(
-        self,
-        config: ExperimentConfig,
-        dataset: List[Dict[str, Any]],
-        save_results: bool = True,
-    ) -> ExperimentSummary:
-        """
-        Run a complete evaluation experiment.
+    # Update settings from CLI
+    settings.EMBED_BACKEND = cast(Literal["openai", "st"], backend)
+    override_settings(tau_f, tau_o, max_rounds)
 
-        Args:
-            config: Experiment configuration
-            dataset: List of dataset samples
-            save_results: Whether to save results to disk
+    # Load dataset
+    with open(dataset) as f:
+        questions = [json.loads(line) for line in f]
+    if n > 0:
+        questions = questions[:n]
 
-        Returns:
-            Experiment summary with aggregate metrics
-        """
-        # TODO: Implement complete experiment execution
-        raise NotImplementedError("Experiment execution not yet implemented")
+    # Select system
+    model: Agent | Baseline
+    if system == "agent":
+        model = Agent(gate_on=gate_on)
+    elif system == "baseline":
+        model = Baseline()
+    else:
+        console.print(f"[bold red]Unknown system: {system}[/bold red]")
+        raise typer.Exit(1)
 
-    async def run_single_sample(
-        self,
-        query: str,
-        ground_truth: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> ExperimentResult:
-        """
-        Run evaluation on a single sample.
+    console.print(
+        f"[bold green]Running evaluation for system: '{system}' with gate {'ON' if gate_on and system=='agent' else 'OFF'}[/bold green]"
+    )
 
-        Args:
-            query: Input query
-            ground_truth: Optional ground truth answer
-            metadata: Optional additional metadata
+    # Run evaluation
+    results = []
+    for item in questions:
+        console.print(f"Processing qid: {item['id']}")
+        summary = model.answer(question=item["question"], qid=item["id"])
+        results.append(summary)
 
-        Returns:
-            Single experiment result
-        """
-        timer = Timer()
+    # Logging and reporting
+    timestamp = int(time.time())
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
 
-        # Time the agent processing
-        timer.start("agent_processing")
-        try:
-            agent_response = await self.agent.process_query(query)
-            timer.stop("agent_processing")
+    # Write JSONL summary
+    jsonl_path = log_dir / f"{timestamp}_{system}.jsonl"
+    with open(jsonl_path, "w") as f:
+        for res in results:
+            f.write(json.dumps(res) + "\n")
+    console.print(f"Full summary logs saved to [cyan]{jsonl_path}[/cyan]")
 
-            # Time the evaluation
-            timer.start("evaluation")
-            evaluation = self.evaluator.evaluate_response(
-                query, agent_response, ground_truth
-            )
-            timer.stop("evaluation")
+    # Write CSV summary
+    csv_path = log_dir / f"{timestamp}_{system}_summary.csv"
+    df = pd.DataFrame(results)
+    df["system"] = system
+    df["id"] = [q["id"] for q in questions]
 
-            # Create experiment result
-            result = ExperimentResult(
-                config=ExperimentConfig(
-                    name="single_sample",
-                    description="Single sample evaluation",
-                    dataset_name="manual",
-                    model_config={},
-                    retrieval_config={},
-                    agent_config={},
-                ),
-                query=query,
-                ground_truth=ground_truth,
-                agent_response=agent_response,
-                evaluation=evaluation,
-                timing=timer.get_times(),
-                metadata=metadata or {},
-            )
+    # Rename for clarity in CSV
+    df = df.rename(columns={"p50_latency_ms": "latency_ms"})
 
-            return result
+    csv_cols = [
+        "system",
+        "id",
+        "final_f",
+        "final_o",
+        "total_tokens",
+        "latency_ms",
+        "rounds",
+    ]
+    df[csv_cols].to_csv(csv_path, index=False)
+    console.print(f"CSV summary saved to [cyan]{csv_path}[/cyan]")
 
-        except Exception as e:
-            timer.stop("agent_processing")
-            # Create failed result
-            return ExperimentResult(
-                config=ExperimentConfig(
-                    name="single_sample",
-                    description="Single sample evaluation",
-                    dataset_name="manual",
-                    model_config={},
-                    retrieval_config={},
-                    agent_config={},
-                ),
-                query=query,
-                ground_truth=ground_truth,
-                agent_response=AgentResponse(
-                    query=query,
-                    answer="Error occurred during processing",
-                    confidence=0.0,
-                    total_rounds=0,
-                    contexts_used=[],
-                    reasoning_trace=[f"Error: {str(e)}"],
-                ),
-                evaluation=EvaluationResult(
-                    query=query,
-                    answer="Error occurred",
-                    contexts=[],
-                ),
-                timing=timer.get_times(),
-                metadata={"error": str(e)},
-            )
+    # Print console summary
+    table = Table(title=f"Evaluation Summary: {system.capitalize()}")
+    table.add_column("Metric", style="magenta")
+    table.add_column("Value", style="yellow")
 
-    def _save_results(
-        self,
-        config: ExperimentConfig,
-        results: List[ExperimentResult],
-        summary: ExperimentSummary,
-    ) -> None:
-        """
-        Save experiment results to disk.
+    table.add_row("Count", str(len(df)))
+    table.add_row("Avg Faithfulness", f"{df['final_f'].mean():.3f}")
+    table.add_row("Avg Overlap", f"{df['final_o'].mean():.3f}")
+    table.add_row("Avg Total Tokens", f"{df['total_tokens'].mean():.0f}")
+    table.add_row("P50 Latency (ms)", f"{df['latency_ms'].median():.0f}")
 
-        Args:
-            config: Experiment configuration
-            results: List of individual results
-            summary: Experiment summary
-        """
-        experiment_dir = self.output_dir / config.name
-        experiment_dir.mkdir(exist_ok=True)
+    console.print(table)
 
-        # Save individual results
-        results_file = experiment_dir / "results.jsonl"
-        with JSONLWriter(results_file) as writer:
-            for result in results:
-                writer.write(result.model_dump())
 
-        # Save summary
-        summary_file = experiment_dir / "summary.json"
-        with open(summary_file, "w") as f:
-            import json
-
-            json.dump(summary.model_dump(), f, indent=2)
-
-        # Save config
-        config_file = experiment_dir / "config.json"
-        with open(config_file, "w") as f:
-            import json
-
-            json.dump(config.model_dump(), f, indent=2)
-
-    def _calculate_summary(
-        self,
-        config: ExperimentConfig,
-        results: List[ExperimentResult],
-    ) -> ExperimentSummary:
-        """
-        Calculate summary statistics from experiment results.
-
-        Args:
-            config: Experiment configuration
-            results: List of experiment results
-
-        Returns:
-            Experiment summary with aggregate metrics
-        """
-        successful_results = [r for r in results if "error" not in r.metadata]
-        failed_results = [r for r in results if "error" in r.metadata]
-
-        summary = ExperimentSummary(
-            config=config,
-            total_samples=len(results),
-            successful_samples=len(successful_results),
-            failed_samples=len(failed_results),
-        )
-
-        if successful_results:
-            # Calculate average metrics
-            faithfulness_scores = [
-                r.evaluation.faithfulness
-                for r in successful_results
-                if r.evaluation.faithfulness is not None
-            ]
-            if faithfulness_scores:
-                summary.avg_faithfulness = sum(faithfulness_scores) / len(
-                    faithfulness_scores
-                )
-
-            # Similar calculations for other metrics
-            precision_scores = [
-                r.evaluation.context_precision
-                for r in successful_results
-                if r.evaluation.context_precision is not None
-            ]
-            if precision_scores:
-                summary.avg_context_precision = sum(precision_scores) / len(
-                    precision_scores
-                )
-
-            recall_scores = [
-                r.evaluation.context_recall
-                for r in successful_results
-                if r.evaluation.context_recall is not None
-            ]
-            if recall_scores:
-                summary.avg_context_recall = sum(recall_scores) / len(recall_scores)
-
-            relevancy_scores = [
-                r.evaluation.answer_relevancy
-                for r in successful_results
-                if r.evaluation.answer_relevancy is not None
-            ]
-            if relevancy_scores:
-                summary.avg_answer_relevancy = sum(relevancy_scores) / len(
-                    relevancy_scores
-                )
-
-            # Calculate timing and agent metrics
-            response_times = [
-                r.timing.get("agent_processing", 0.0) for r in successful_results
-            ]
-            summary.avg_response_time = sum(response_times) / len(response_times)
-
-            total_rounds = [r.agent_response.total_rounds for r in successful_results]
-            summary.avg_total_rounds = sum(total_rounds) / len(total_rounds)
-
-            confidences = [r.agent_response.confidence for r in successful_results]
-            summary.avg_confidence = sum(confidences) / len(confidences)
-
-        return summary
-
-    def load_experiment_results(
-        self,
-        experiment_name: str,
-    ) -> tuple[ExperimentConfig, List[ExperimentResult], ExperimentSummary]:
-        """
-        Load previously saved experiment results.
-
-        Args:
-            experiment_name: Name of the experiment to load
-
-        Returns:
-            Tuple of (config, results, summary)
-        """
-        experiment_dir = self.output_dir / experiment_name
-
-        # Load config
-        config_file = experiment_dir / "config.json"
-        with open(config_file) as f:
-            import json
-
-            config_data = json.load(f)
-            config = ExperimentConfig(**config_data)
-
-        # Load results
-        results_file = experiment_dir / "results.jsonl"
-        results = []
-        with open(results_file) as f:
-            for line in f:
-                import json
-
-                result_data = json.loads(line)
-                results.append(ExperimentResult(**result_data))
-
-        # Load summary
-        summary_file = experiment_dir / "summary.json"
-        with open(summary_file) as f:
-            import json
-
-            summary_data = json.load(f)
-            summary = ExperimentSummary(**summary_data)
-
-        return config, results, summary
+if __name__ == "__main__":
+    app()

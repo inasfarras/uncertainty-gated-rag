@@ -1,69 +1,31 @@
-"""Configuration settings for the agentic RAG system."""
-
 from typing import Literal
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    """Configuration settings loaded from environment variables."""
+    OPENAI_API_KEY: str | None = None
+    OPENAI_BASE_URL: str | None = None
+    OPENAI_ORG: str | None = None
 
-    # LLM Configuration
-    llm_provider: Literal["openai", "ollama", "local"] = Field(
-        default="openai", description="LLM provider to use"
-    )
-    llm_model: str = Field(default="gpt-4o-mini", description="LLM model name")
-    embed_model: str = Field(
-        default="sentence-transformers/all-MiniLM-L6-v2",
-        description="Embedding model name",
-    )
+    LLM_MODEL: str = "gpt-4o-mini"
+    EMBED_BACKEND: Literal["openai", "st"] = "openai"
+    EMBED_MODEL: str = "text-embedding-3-small"
+    ST_EMBED_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
 
-    # Token and Round Limits
-    max_tokens_total: int = Field(
-        default=3500, description="Maximum total tokens allowed"
-    )
-    max_rounds: int = Field(default=2, description="Maximum number of RAG rounds")
-    low_budget_tokens: int = Field(
-        default=500, description="Low budget token threshold"
-    )
+    FAISS_INDEX_PATH: str = "artifacts/faiss"
+    MAX_TOKENS_TOTAL: int = 3500
+    MAX_ROUNDS: int = 2
+    RETRIEVAL_K: int = 8
+    GRAPH_K: int = 20
+    FAITHFULNESS_TAU: float = 0.75
+    OVERLAP_TAU: float = 0.50
+    LOW_BUDGET_TOKENS: int = 500
+    USE_RERANK: bool = False
 
-    # Retrieval Configuration
-    retrieval_k: int = Field(default=8, description="Number of documents to retrieve")
-    graph_k: int = Field(
-        default=20, description="Number of graph neighbors to consider"
-    )
-    use_rerank: bool = Field(default=True, description="Whether to use reranking")
-
-    # Quality Thresholds
-    faithfulness_tau: float = Field(
-        default=0.75, description="Faithfulness threshold for quality control"
-    )
-    overlap_tau: float = Field(
-        default=0.50, description="Overlap threshold for duplicate detection"
-    )
-
-    # Directory Paths
-    data_dir: str = Field(default="./data/corpus", description="Data directory path")
-    index_dir: str = Field(
-        default="./artifacts/faiss", description="FAISS index directory"
-    )
-    log_dir: str = Field(default="./artifacts/logs", description="Logs directory path")
-    report_dir: str = Field(
-        default="./artifacts/reports", description="Reports directory path"
-    )
-
-    # System Configuration
-    log_level: str = Field(default="INFO", description="Logging level")
-    seed: int = Field(default=42, description="Random seed for reproducibility")
-
-    model_config = SettingsConfigDict(
-        extra="ignore",  # Ignore extra environment variables
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-    )
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
 
 
-# Singleton instance
 settings = Settings()

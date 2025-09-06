@@ -1,7 +1,8 @@
 """JSONL utilities for reading and writing JSON Lines format using orjson."""
 
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import IO, Any, Callable, Dict, List, Optional, Union, overload
 
 import orjson
 
@@ -33,8 +34,15 @@ class JSONLReader:
                     data.append(orjson.loads(line))
         return data
 
+    @overload
+    def iterate(self, batch_size: None = None) -> Iterator[Dict[str, Any]]: ...
+
+    @overload
+    def iterate(self, batch_size: int) -> Iterator[List[Dict[str, Any]]]: ...
+
     def iterate(
-        self, batch_size: Optional[int] = None
+        self,
+        batch_size: Optional[int] = None,
     ) -> Iterator[Union[Dict[str, Any], List[Dict[str, Any]]]]:
         """
         Iterate over lines in the JSONL file.
@@ -52,7 +60,7 @@ class JSONLReader:
                     if line:
                         yield orjson.loads(line)
         else:
-            batch = []
+            batch: List[Dict[str, Any]] = []
             with open(self.file_path, "rb") as f:
                 for line in f:
                     line = line.strip()
@@ -101,7 +109,7 @@ class JSONLWriter:
         self.file_path = Path(file_path)
         self.mode = mode
         self.ensure_ascii = ensure_ascii
-        self._file = None
+        self._file: Optional[IO[Any]] = None
 
         # Create parent directory if it doesn't exist
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +119,12 @@ class JSONLWriter:
         self._file = open(self.file_path, self.mode + "b")
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[Any],
+    ) -> None:
         """Context manager exit."""
         if self._file:
             self._file.close()
@@ -124,17 +137,19 @@ class JSONLWriter:
         Args:
             data: Dictionary to write as JSON
         """
-        if self._file is None:
-            raise RuntimeError(
-                "Writer not opened. Use as context manager or call open()."
-            )
+        # No need for this check, as __enter__ ensures _file is not None
+        # if self._file is None:
+        #     raise RuntimeError(
+        #         "Writer not opened. Use as context manager or call open()."
+        #     )
 
         json_bytes = orjson.dumps(
             data,
             option=orjson.OPT_APPEND_NEWLINE
             | (orjson.OPT_NON_STR_KEYS if not self.ensure_ascii else 0),
         )
-        self._file.write(json_bytes)
+        if self._file:
+            self._file.write(json_bytes)
 
     def write_batch(self, data_list: List[Dict[str, Any]]) -> None:
         """
@@ -230,7 +245,7 @@ def merge_jsonl_files(
 def filter_jsonl(
     input_file: Union[str, Path],
     output_file: Union[str, Path],
-    filter_func: callable,
+    filter_func: Callable[[Dict[str, Any]], bool],
 ) -> int:
     """
     Filter a JSONL file based on a predicate function.

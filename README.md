@@ -14,45 +14,48 @@ An advanced RAG (Retrieval-Augmented Generation) system with agentic capabilitie
 ## Requirements
 
 - Python 3.11+
-- Poetry for dependency management
-- spaCy English language model
+- An OpenAI API Key
 
-## Installation
+## Windows Quickstart
 
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/agentic-rag.git
-cd agentic-rag
-```
+1.  **Create and activate a virtual environment:**
+    ```powershell
+    py -3.11 -m venv .venv
+    .\.venv\Scripts\Activate.ps1
+    ```
 
-2. Install dependencies:
-```bash
-make install
-```
+2.  **Install dependencies:**
+    ```bash
+    pip install -U pip wheel setuptools
+    pip install fastapi uvicorn pydantic numpy pandas scikit-learn faiss-cpu tiktoken ragas datasets nltk pyyaml rich loguru typer httpx orjson openai tenacity black ruff mypy pytest pytest-cov
+    ```
 
-This will:
-- Install all dependencies using Poetry
-- Download the spaCy English language model
-- Set up pre-commit hooks
+3.  **Configure your environment:**
+    Copy `.env.example` to `.env` and set your `OPENAI_API_KEY`.
+    ```powershell
+    copy .env.example .env
+    # Now edit the .env file
+    ```
 
-## Configuration
+4.  **Create a toy corpus:**
+    Create a directory `data/corpus` and add a few `.txt` files with some text content.
 
-1. Copy the example environment file:
-```bash
-cp .env.example .env
-```
+5.  **Build the FAISS index:**
+    ```bash
+    python -m agentic_rag.ingest.ingest --input data/corpus --out artifacts/faiss
+    ```
 
-2. Edit `.env` with your settings:
-- Set your LLM provider (openai/llama/ollama)
-- Configure API keys if using OpenAI
-- Adjust API host/port if needed
+6.  **Run a smoke test:**
+    ```bash
+    make run-baseline
+    ```
+    This will ask 3 hardcoded questions and print the results. To run with the agentic gate enabled (once implemented), use `make run-agent`.
 
 ## Usage
 
-### Running the API
-
+### Ingest Data
 ```bash
-make run-api
+make ingest
 ```
 
 The API will be available at http://localhost:8000

@@ -1,4 +1,5 @@
-"""Retriever policy switcher for selecting between vector and graph retrieval strategies."""
+"""Retriever policy switcher for selecting between vector and graph retrieval \
+strategies."""
 
 from abc import ABC, abstractmethod
 from enum import Enum
@@ -6,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
-from agentic_rag.retriever.vector import RetrievalContext, VectorRetriever
+from agentic_rag.retriever.vector import ContextChunk, VectorRetriever
 
 
 class RetrievalStrategy(str, Enum):
@@ -24,6 +25,9 @@ class SwitchingDecision(BaseModel):
     confidence: float
     reasoning: str
     metadata: Dict[str, Any] = {}
+
+
+RetrievalContext = List[ContextChunk]
 
 
 class BaseSwitcher(ABC):
@@ -73,7 +77,7 @@ class RetrieverSwitcher(BaseSwitcher):
         switching_strategy: str = "round_robin",
         vector_threshold: float = 0.7,
         graph_keywords: Optional[List[str]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
         """
         Initialize retriever switcher.
@@ -81,7 +85,9 @@ class RetrieverSwitcher(BaseSwitcher):
         Args:
             vector_retriever: Vector-based retriever
             graph_retriever: Graph-based retriever (optional)
-            switching_strategy: Strategy for switching ("round_robin", "adaptive", "keyword")
+            switching_strategy: Strategy for switching (
+                "round_robin", "adaptive", "keyword"
+            )
             vector_threshold: Threshold for vector retrieval confidence
             graph_keywords: Keywords that suggest graph retrieval
             **kwargs: Additional configuration
@@ -211,7 +217,10 @@ class RetrieverSwitcher(BaseSwitcher):
             return SwitchingDecision(
                 strategy=RetrievalStrategy.GRAPH,
                 confidence=min(0.9, 0.5 + graph_score * 0.1),
-                reasoning=f"Found {graph_score} graph-indicating keywords: {self.graph_keywords}",
+                reasoning=(
+                    f"Found {graph_score} graph-indicating keywords: "
+                    f"{self.graph_keywords}"
+                ),
             )
         else:
             return SwitchingDecision(
@@ -241,21 +250,22 @@ class RetrieverSwitcher(BaseSwitcher):
         total_chunks = 0
 
         for context in contexts:
-            if context.scores:
-                total_score += sum(context.scores)
-                total_chunks += len(context.scores)
+            total_score += sum(
+                c["score"] for c in context if c.get("score") is not None
+            )
+            total_chunks += len(context)
 
         if total_chunks == 0:
             return 0.5
 
         return min(1.0, total_score / total_chunks)
 
-    async def retrieve_with_strategy(
+    def retrieve_with_strategy(
         self,
         query: str,
         strategy: RetrievalStrategy,
         k: Optional[int] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> RetrievalContext:
         """
         Retrieve using the specified strategy.
@@ -269,18 +279,19 @@ class RetrieverSwitcher(BaseSwitcher):
         Returns:
             Retrieval context
         """
+        k_val = k or 8
         if strategy == RetrievalStrategy.VECTOR:
-            return await self.vector_retriever.retrieve(query, k, **kwargs)
+            return self.vector_retriever.retrieve(query, k_val, **kwargs)
         elif strategy == RetrievalStrategy.GRAPH:
             if self.graph_retriever is None:
                 # Fallback to vector retrieval
-                return await self.vector_retriever.retrieve(query, k, **kwargs)
+                return self.vector_retriever.retrieve(query, k_val, **kwargs)
             # TODO: Implement graph retrieval
             raise NotImplementedError("Graph retrieval not yet implemented")
         elif strategy == RetrievalStrategy.HYBRID:
             # TODO: Implement hybrid retrieval
             # For now, fallback to vector
-            return await self.vector_retriever.retrieve(query, k, **kwargs)
+            return self.vector_retriever.retrieve(query, k_val, **kwargs)
         else:
             raise ValueError(f"Unsupported retrieval strategy: {strategy}")
 

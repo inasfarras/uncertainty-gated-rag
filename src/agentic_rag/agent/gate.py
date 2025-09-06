@@ -5,7 +5,9 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
-from agentic_rag.retriever.vector import RetrievalContext
+from agentic_rag.retriever.vector import ContextChunk
+
+RetrievalContext = List[ContextChunk]
 
 
 class UncertaintyMetrics(BaseModel):
@@ -21,7 +23,7 @@ class UncertaintyMetrics(BaseModel):
 class BaseUncertaintyGate(ABC):
     """Abstract base class for uncertainty gates."""
 
-    def __init__(self, threshold: float = 0.75, **kwargs) -> None:
+    def __init__(self, threshold: float = 0.75, **kwargs: dict) -> None:
         """
         Initialize uncertainty gate.
 
@@ -103,7 +105,7 @@ class UncertaintyGate(BaseUncertaintyGate):
         min_response_length: int = 10,
         confidence_keywords: Optional[List[str]] = None,
         uncertainty_keywords: Optional[List[str]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
         """
         Initialize uncertainty gate with multiple signals.
@@ -116,7 +118,20 @@ class UncertaintyGate(BaseUncertaintyGate):
             uncertainty_keywords: Keywords indicating uncertainty
             **kwargs: Additional configuration
         """
-        super().__init__(**kwargs)
+        # Extract known kwargs before passing the rest to super()
+        super_kwargs = {
+            k: v
+            for k, v in kwargs.items()
+            if k
+            not in [
+                "faithfulness_threshold",
+                "overlap_threshold",
+                "min_response_length",
+                "confidence_keywords",
+                "uncertainty_keywords",
+            ]
+        }
+        super().__init__(**super_kwargs)
         self.faithfulness_threshold = faithfulness_threshold
         self.overlap_threshold = overlap_threshold
         self.min_response_length = min_response_length
@@ -261,7 +276,7 @@ class UncertaintyGate(BaseUncertaintyGate):
 class SimpleUncertaintyGate(BaseUncertaintyGate):
     """Simple uncertainty gate based on keyword matching."""
 
-    def __init__(self, threshold: float = 0.75, **kwargs) -> None:
+    def __init__(self, threshold: float = 0.75, **kwargs: Any) -> None:
         """
         Initialize simple uncertainty gate.
 
@@ -269,7 +284,9 @@ class SimpleUncertaintyGate(BaseUncertaintyGate):
             threshold: Uncertainty threshold
             **kwargs: Additional configuration
         """
-        super().__init__(threshold, **kwargs)
+        # Extract known kwargs before passing the rest to super()
+        super_kwargs = {k: v for k, v in kwargs.items() if k != "threshold"}
+        super().__init__(threshold, **super_kwargs)
 
     def assess_uncertainty(
         self,
@@ -310,7 +327,7 @@ class SimpleUncertaintyGate(BaseUncertaintyGate):
 
 def create_uncertainty_gate(
     gate_type: str = "default",
-    **kwargs,
+    **kwargs: Any,
 ) -> BaseUncertaintyGate:
     """
     Factory function to create uncertainty gates.
@@ -326,8 +343,22 @@ def create_uncertainty_gate(
         ValueError: If gate type is not supported
     """
     if gate_type == "default":
-        return UncertaintyGate(**kwargs)
+        faithfulness_threshold = kwargs.pop("faithfulness_threshold", 0.75)
+        overlap_threshold = kwargs.pop("overlap_threshold", 0.50)
+        min_response_length = kwargs.pop("min_response_length", 10)
+        confidence_keywords = kwargs.pop("confidence_keywords", None)
+        uncertainty_keywords = kwargs.pop("uncertainty_keywords", None)
+
+        return UncertaintyGate(
+            faithfulness_threshold=faithfulness_threshold,
+            overlap_threshold=overlap_threshold,
+            min_response_length=min_response_length,
+            confidence_keywords=confidence_keywords,
+            uncertainty_keywords=uncertainty_keywords,
+            **kwargs,
+        )
     elif gate_type == "simple":
-        return SimpleUncertaintyGate(**kwargs)
+        threshold = kwargs.pop("threshold", 0.75)
+        return SimpleUncertaintyGate(threshold=threshold, **kwargs)
     else:
         raise ValueError(f"Unsupported uncertainty gate type: {gate_type}")
