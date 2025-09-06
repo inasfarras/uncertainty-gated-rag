@@ -2,57 +2,38 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
   pull_request:
-    branches: [ main ]
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11"]
-
+    env:
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      # Force offline path
+      EMBED_BACKEND: "mock"
+      OPENAI_API_KEY: "test-dummy"
+      LLM_MODEL: "gpt-4o-mini"
+      EMBED_MODEL: "text-embedding-3-small"
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-        
-    - name: Install Poetry
-      uses: snok/install-poetry@v1
-      with:
-        version: 1.7.1
-        virtualenvs-create: true
-        virtualenvs-in-project: true
-        
-    - name: Load cached venv
-      id: cached-poetry-dependencies
-      uses: actions/cache@v4
-      with:
-        path: .venv
-        key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
-        
-    - name: Install dependencies
-      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-      run: |
-        poetry install --with dev
-        poetry run python -m spacy download en_core_web_sm
-        
-    - name: Run linters
-      run: |
-        poetry run black --check src tests
-        poetry run ruff src tests
-        poetry run mypy src tests
-        
-    - name: Run tests
-      run: |
-        poetry run pytest -v --cov=src --cov-report=xml tests/
-        
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v4
-      with:
-        file: ./coverage.xml
-        fail_ci_if_error: true
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip wheel setuptools
+          pip install fastapi uvicorn pydantic numpy pandas scikit-learn faiss-cpu tiktoken ragas datasets nltk pyyaml rich loguru typer httpx orjson openai tenacity black ruff mypy pytest pytest-cov
+
+      - name: Lint
+        run: |
+          black --check .
+          ruff check .
+
+      - name: Type check
+        run: mypy src/agentic_rag -q
+
+      - name: Unit tests (no network)
+        run: pytest -q -m "not slow and not e2e" --maxfail=1

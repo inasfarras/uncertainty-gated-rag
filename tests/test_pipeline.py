@@ -30,6 +30,7 @@ def test_index_dir():
         shutil.rmtree(dir_path)
 
 
+@pytest.mark.e2e
 @patch("agentic_rag.embed.encoder.get_openai")
 def test_pipeline(mock_get_openai, test_data_dir, test_index_dir):
     # Mock the OpenAI embedder

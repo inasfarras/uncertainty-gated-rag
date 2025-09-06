@@ -1,0 +1,22 @@
+name: E2E (manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      EMBED_BACKEND: "openai"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: |
+          python -m pip install -U pip wheel setuptools
+          pip install fastapi uvicorn pydantic numpy pandas scikit-learn faiss-cpu tiktoken ragas datasets nltk pyyaml rich loguru typer httpx orjson openai tenacity pytest
+      - name: Build FAISS (small)
+        run: python -m agentic_rag.ingest.ingest --input data/corpus --out artifacts/faiss --backend openai
+      - name: Agent smoke (3 queries)
+        run: python -m agentic_rag.eval.runner --dataset data/sample.jsonl --system agent --gate-on --n 3
