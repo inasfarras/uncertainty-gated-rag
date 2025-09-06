@@ -28,10 +28,12 @@ def is_global_question(q: str) -> bool:
 
 def build_prompt(contexts: List[ContextChunk], question: str) -> List[ChatMessage]:
     """Builds a prompt for the LLM."""
-    context_str = "\n\n".join([c["text"] for c in contexts])
+    context_str = "\n\n".join([f"ID: {c['id']}\nText: {c['text']}" for c in contexts])
     content = (
-        f"Answer the following question based only on the provided context. "
-        f"If the context does not contain the answer, say 'I don't know'.\n\n"
+        "You are a helpful assistant. Answer the user's question based only on the provided context.\n"
+        "Your answer must be grounded in the context. Every sentence in your answer must be supported by the context.\n"
+        "For each sentence, you must cite the ID of the context chunk that supports it. Append the citation in the format `[CIT:<ID>]` at the end of the sentence.\n"
+        "If the context does not contain the answer, say 'I don't know'.\n\n"
         f"CONTEXT:\n{context_str}\n\n"
         f"QUESTION: {question}\n\n"
         f"ANSWER:"
