@@ -3,6 +3,7 @@ name = "agentic-rag"
 version = "0.1.0"
 description = "Agentic RAG system for advanced information retrieval and generation"
 authors = ["Your Name <your.email@example.com>"]
+license = "MIT"
 readme = "README.md"
 packages = [{include = "agentic_rag", from = "src"}]
 
@@ -39,6 +40,7 @@ ruff = "^0.3.0"
 black = "^24.2.0"
 mypy = "^1.8.0"
 pre-commit = "^3.6.2"
+classifiers = ["License :: OSI Approved :: MIT License"]
 
 [tool.poetry.extras]
 openai = ["openai"]
