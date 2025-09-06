@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     LOW_BUDGET_TOKENS: int = 500
     USE_RERANK: bool = False
 
+    LOG_DIR: str = "logs"
+    LOG_LEVEL: str = "INFO"
+
     class Config:
         env_file = ".env"
         case_sensitive = False
