@@ -1,6 +1,6 @@
 """FastAPI main application with query endpoint."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 from agentic_rag.agent.loop import Agent
 from agentic_rag.config import settings
@@ -18,7 +18,7 @@ class QueryRequest(BaseModel):
     max_rounds: Optional[int] = None
     use_rerank: Optional[bool] = None
     retrieval_k: Optional[int] = None
-    metadata: Dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
 
 
 class QueryResponse(BaseModel):
@@ -28,10 +28,10 @@ class QueryResponse(BaseModel):
     answer: str
     confidence: float
     total_rounds: int
-    contexts_used: List[Dict[str, Any]]
+    contexts_used: List[dict[str, Any]]
     reasoning_trace: List[str]
     processing_time_ms: float
-    metadata: Dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
 
 
 class HealthResponse(BaseModel):
@@ -39,7 +39,7 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
-    components: Dict[str, str]
+    components: dict[str, str]
 
 
 # Global agent instance (will be initialized on startup)
@@ -138,12 +138,12 @@ def _configure_query_endpoint(app: FastAPI) -> None:
 
 def _configure_stats_endpoint(app: FastAPI) -> None:
     @app.get("/stats")
-    async def get_stats() -> Dict[str, Any]:
+    async def get_stats() -> dict[str, Any]:
         if agent is None:
             return {"error": "Agent not initialized"}
 
         try:
-            stats: Dict[str, Any] = {}
+            stats: dict[str, Any] = {}
             return {
                 "agent_stats": stats,
                 "config": {
