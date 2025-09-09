@@ -2,9 +2,11 @@ import glob
 import os
 from typing import Literal, cast
 
+import numpy as np
 import pandas as pd
 import typer
 from rich import print
+from tqdm import tqdm
 
 from agentic_rag.config import settings
 from agentic_rag.embed.encoder import chunk_text, embed_texts
@@ -41,7 +43,20 @@ def main(
         print("[red]No .txt files found.[/red]")
         raise SystemExit(1)
     df = pd.DataFrame(records)
-    embs = embed_texts(df["text"].tolist())
+
+    # --- Batch processing for embeddings ---
+    batch_size = 200  # A reasonable batch size to avoid API limits
+    all_embs = []
+
+    print(f"Embedding {len(df)} chunks in batches of {batch_size}...")
+    for i in tqdm(range(0, len(df), batch_size)):
+        batch_texts = df["text"].iloc[i : i + batch_size].tolist()
+        batch_embs = embed_texts(batch_texts)
+        all_embs.append(batch_embs)
+
+    embs = np.concatenate(all_embs, axis=0)
+    # --- End batch processing ---
+
     build_index(embs, df["id"].tolist(), out)
     df.to_parquet(os.path.join(out, "chunks.parquet"))
     print(f"[green]Built FAISS at {out} with {len(df)} chunks[/green]")

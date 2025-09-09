@@ -51,3 +51,40 @@ smoke-mock:
 	python -m agentic_rag.ingest.ingest --input data/corpus --out artifacts/faiss --backend mock
 	python -m agentic_rag.eval.runner --dataset data/sample.jsonl --system baseline --gate-off --n 3
 	python -m agentic_rag.eval.runner --dataset data/sample.jsonl --system agent --gate-on --n 3
+
+crag-prepare:
+	python scripts/prepare_crag.py --out-dir data/crag_corpus --qs-file data/crag_questions.jsonl --split test --static-only --n 200
+
+crag-ingest-openai:
+	python -m agentic_rag.ingest.ingest --input data/crag_corpus --out artifacts/crag_faiss --backend openai
+
+crag-ingest-mock:
+	python -m agentic_rag.ingest.ingest --input data/crag_corpus --out artifacts/crag_faiss --backend mock
+
+crag-run-baseline:
+	python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system baseline --gate-off --n 200
+
+crag-run-agent:
+	python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system agent --gate-on --n 200
+
+crag-all-mock: crag-prepare crag-ingest-mock crag-run-baseline crag-run-agent
+
+crag-full-download:
+	python scripts/crag_full_download.py
+
+crag-full-prepare:
+	python scripts/prepare_crag_from_jsonl.py --src data/crag_task_1_and_2_dev_v4.jsonl.bz2 --out-dir data/crag_corpus_html --qs-file data/crag_questions.jsonl --meta-file data/crag_meta.jsonl --static-only --n 200 --min-chars 500 --max-pages-per-q 20
+
+crag-full-ingest-openai:
+	python -m agentic_rag.ingest.ingest --input data/crag_corpus_html --out artifacts/crag_faiss --backend openai
+
+crag-full-ingest-mock:
+	python -m agentic_rag.ingest.ingest --input data/crag_corpus_html --out artifacts/crag_faiss --backend mock
+
+crag-full-run-baseline:
+	python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system baseline --gate-off --n 200
+
+crag-full-run-agent:
+	python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system agent --gate-on --n 200
+
+crag-full-all-openai: crag-full-download crag-full-prepare crag-full-ingest-openai crag-full-run-baseline crag-full-run-agent

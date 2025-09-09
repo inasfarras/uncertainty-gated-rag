@@ -59,6 +59,7 @@ wandb/
 mlruns/
 outputs/
 logs/
+artifacts/
 
 # Logs and databases
 *.log

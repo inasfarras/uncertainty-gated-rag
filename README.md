@@ -15,7 +15,6 @@ Agentic Retrieval-Augmented Generation with an **uncertainty gate** that turns â
 
 ## ðŸ“¦ Requirements
 - Python **3.11+**
-- [Poetry](https://python-poetry.org/docs/#installation)
 - (Online mode) **OPENAI_API_KEY**
 - Windows, macOS, or Linux
 
@@ -23,29 +22,41 @@ Agentic Retrieval-Augmented Generation with an **uncertainty gate** that turns â
 
 ## ðŸš€ Quickstart
 
-1. **Clone the repo and install dependencies**
+1. **Clone the repo**
     ```bash
     git clone https://github.com/your-username/agentic-rag.git
     cd agentic-rag
-    poetry install
     ```
 
-2. **Activate the virtual environment**
+2. **Create and activate a virtual environment**
+    ```powershell
+    # Windows PowerShell
+    py -3.11 -m venv .venv
+    .\.venv\Scripts\Activate.ps1
+    ```
     ```bash
-    poetry shell
+    # macOS / Linux
+    python3.11 -m venv .venv
+    source .venv/bin/activate
     ```
 
-3. **Configure environment**
+3. **Install dependencies**
+    ```bash
+    pip install -U pip wheel setuptools
+    pip install -r requirements.txt
+    ```
+
+4. **Configure environment**
     ```bash
     cp .env.example .env
     # Edit .env and set OPENAI_API_KEY=sk-xxxxx (for online mode)
     ```
 
-4. **Prepare a tiny corpus**
+5. **Prepare a tiny corpus**
 
     Create a few `.txt` files in the `data/corpus/` directory.
 
-5. **Run a smoke test**
+6. **Run a smoke test**
     ```bash
     # Offline (mock embeddings; no API key)
     make smoke-mock
@@ -89,6 +100,108 @@ Agentic Retrieval-Augmented Generation with an **uncertainty gate** that turns â
 | `LOW_BUDGET_TOKENS` | `500`                    | Stop when remaining tokens < this         |
 
 > CLI flags can override most of these at runtime (e.g., `--tau-f`, `--tau-o`, `--max-rounds`).
+
+---
+
+## ðŸ“š Using CRAG (Quivr/CRAG)
+
+This project includes first-class support for the [Quivr/CRAG](https://huggingface.co/datasets/Quivr/CRAG) dataset.
+
+1.  **Log in to Hugging Face (if needed)**
+    ```bash
+    # This may be required for gated or private datasets
+    pip install huggingface_hub
+    huggingface-cli login
+    ```
+    You will need to provide a token with read access.
+
+2.  **Prepare the dataset**
+    ```bash
+    python scripts/prepare_crag.py --out-dir data/crag_corpus --qs-file data/crag_questions.jsonl --split test --static-only --n 200
+    ```
+    This downloads the dataset, converts HTML search results to clean text, and filters for high-quality static content. The documents are saved to `data/crag_corpus/` and questions to `data/crag_questions.jsonl`.
+
+#### Live Fetching Mode (`--fetch-live`)
+
+The `prepare_crag.py` script includes an optional `--fetch-live` mode. If a search result in the dataset is missing its HTML content (`page_result`), this mode will attempt to download the page from its original URL.
+
+> **Disclaimer**: Live fetching interacts with external websites. This feature is intended for research purposes only.
+> - **Be responsible**: You are responsible for complying with all applicable laws, website Terms of Service, and `robots.txt` files.
+> - **Respect copyrights**: Do not use this feature to download content you do not have the right to access.
+> - **Avoid high rates**: The script includes a default 1-second delay between requests to avoid overwhelming servers. Do not significantly lower this value or "hammer" websites. Abuse may lead to your IP address being blocked.
+
+Example usage:
+```bash
+python scripts/prepare_crag.py --split train --static-only --n 200 --min-chars 300 --fetch-live --max-live-per-q 3
+```
+
+3.  **Ingest the corpus (choose one)**
+    ```bash
+    # OpenAI (recommended)
+    make crag-ingest-openai
+
+    # Mock (offline)
+    make crag-ingest-mock
+    ```
+
+4.  **Run evaluation**
+    ```bash
+    # Baseline
+    make crag-run-baseline
+
+    # Agent
+    make crag-run-agent
+    ```
+
+**Tips:**
+*   Start with `--static-only` to avoid noisy, time-sensitive web content.
+*   If `overlap` is frequently 0, try lowering `OVERLAP_SIM_TAU` to `0.55`â€“`0.60`.
+*   Ensure your prompt template forces the model to use citations like `[CIT:chunk_id]` for every claim.
+
+### Using CRAG (Full HTML)
+
+> **Note**: The Corrective RAG (CRAG) dataset is licensed under **CC BY-NC 4.0** (Creative Commons Attribution-NonCommercial 4.0 International). It is intended for non-commercial, academic use. Please review the license terms before using the dataset.
+
+This project supports the full CRAG dataset, which includes complete HTML content for web pages. Follow these steps to download, prepare, and evaluate using this dataset:
+
+1.  **Download the dataset**
+    ```bash
+    make crag-full-download
+    ```
+    *(Alternatively: `python scripts/crag_full_download.py`)*
+
+2.  **Prepare the corpus, questions, and metadata**
+    ```bash
+    make crag-full-prepare
+    ```
+    *(Alternatively: `python scripts/prepare_crag_from_jsonl.py --static-only --n 200`)*
+
+3.  **Run the end-to-end pipeline using the Makefile targets:**
+
+    ```bash
+    # Ingest the text corpus into FAISS
+    # Choose one of the following backends:
+    make crag-full-ingest-openai   # Requires OPENAI_API_KEY
+    # or
+    make crag-full-ingest-mock     # For offline/testing
+
+    # Run evaluations
+    make crag-full-run-baseline
+    make crag-full-run-agent
+    ```
+
+    You can also run the entire OpenAI-based pipeline with a single command:
+    ```bash
+    make crag-full-all-openai
+    ```
+
+#### Tips for a Custom Run
+
+-   **Start with static content**: For more stable and reproducible evaluations, the default `crag-full-prepare` target uses the `--static-only` flag to filter out queries about real-time or fast-changing information.
+-   **Tune retrieval parameters**: If you find that the system's answers are too generic or lack specific citations, you might need to adjust the retrieval parameters. In particular, lowering the `OVERLAP_SIM_TAU` threshold (e.g., to `0.55`â€“`0.60`) in the configuration can help retrieve more relevant chunks.
+-   **Enforce citations**: Ensure that your model's prompt strongly encourages or requires citations in the format `[CIT:doc_id]` to improve traceability and accuracy.
+-   **Adjust dataset size**: You can process more or fewer questions by changing the `--n` argument in the `crag-full-prepare` target in the `Makefile`. Similarly, modify `--max-pages-per-q` to control the number of web pages saved for each question.
+
 
 ---
 
