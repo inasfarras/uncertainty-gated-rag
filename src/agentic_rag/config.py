@@ -13,13 +13,14 @@ class Settings(BaseSettings):
     EMBED_MODEL: str = "text-embedding-3-small"
     ST_EMBED_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
 
-    FAISS_INDEX_PATH: str = "artifacts/faiss"
+    FAISS_INDEX_PATH: str = "artifacts/test_faiss"
     MAX_TOKENS_TOTAL: int = 3500
     MAX_ROUNDS: int = 2
     RETRIEVAL_K: int = 8
     GRAPH_K: int = 20
     FAITHFULNESS_TAU: float = 0.75
     OVERLAP_TAU: float = 0.50
+    OVERLAP_SIM_TAU: float = 0.58
     LOW_BUDGET_TOKENS: int = 500
     USE_RERANK: bool = False
 

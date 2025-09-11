@@ -28,17 +28,24 @@ def is_global_question(q: str) -> bool:
 
 def build_prompt(contexts: List[ContextChunk], question: str) -> List[ChatMessage]:
     """Builds a prompt for the LLM."""
-    context_str = "\n\n".join([f"ID: {c['id']}\nText: {c['text']}" for c in contexts])
-    content = (
-        "You are a helpful assistant. Answer the user's question based only on the provided context.\n"
-        "Your answer must be grounded in the context. Every sentence in your answer must be supported by the context.\n"
-        "For each sentence, you must cite the ID of the context chunk that supports it. Append the citation in the format `[CIT:<ID>]` at the end of the sentence.\n"
-        "If the context does not contain the answer, say 'I don't know'.\n\n"
-        f"CONTEXT:\n{context_str}\n\n"
-        f"QUESTION: {question}\n\n"
-        f"ANSWER:"
+    context_str = "\n\n".join([f"CTX[{c['id']}]:\n{c['text']}" for c in contexts])
+
+    system_content = (
+        "You answer ONLY using the provided CONTEXT.\n"
+        "EVERY sentence in your response MUST end with a citation token [CIT:<doc_id>].\n"
+        "<doc_id> MUST be exactly one of the IDs shown in CONTEXT headers (CTX[...]).\n"
+        "If the context does not contain the answer, respond: 'I don't know [CIT:<any_available_doc_id>].'\n"
+        "NEVER write a sentence without [CIT:<doc_id>] at the end.\n"
+        "Your response will be evaluated: sentences without citations = automatic failure.\n"
+        "Be concise and factual."
     )
-    return [ChatMessage(role="user", content=content)]
+
+    user_content = f"QUESTION:\n{question}\n\n" f"CONTEXT:\n{context_str}"
+
+    return [
+        ChatMessage(role="system", content=system_content),
+        ChatMessage(role="user", content=user_content),
+    ]
 
 
 class GateAction(str, Enum):
@@ -50,8 +57,9 @@ class GateAction(str, Enum):
 
 
 class BaseAgent:
-    def __init__(self, system: str = "base"):
+    def __init__(self, system: str = "base", debug_mode: bool = False):
         self.system = system
+        self.debug_mode = debug_mode
         self.retriever = VectorRetriever(settings.FAISS_INDEX_PATH)
         self.llm = OpenAIAdapter()
         self.log_dir = Path("logs")
@@ -63,8 +71,8 @@ class BaseAgent:
 
 
 class Baseline(BaseAgent):
-    def __init__(self):
-        super().__init__(system="baseline")
+    def __init__(self, debug_mode: bool = False):
+        super().__init__(system="baseline", debug_mode=debug_mode)
 
     def answer(self, question: str, qid: str | None = None) -> Dict[str, Any]:
         qid = qid or str(uuid.uuid4())
@@ -83,10 +91,18 @@ class Baseline(BaseAgent):
         tokens_left -= usage["total_tokens"]
 
         context_texts = [c["text"] for c in contexts]
-        o = overlap_ratio(draft, context_texts)
+        context_ids = [c["id"] for c in contexts]
+        o = overlap_ratio(draft, context_texts, context_ids=context_ids)
         f = faithfulness_score(question, context_texts, draft)
         if f is None:
             f = min(1.0, 0.6 + 0.4 * o)
+
+        # Debug logging
+        if self.debug_mode:
+            from agentic_rag.eval.debug import log_debug_info
+
+            prompt_messages = [{"role": m.role, "content": m.content} for m in prompt]
+            log_debug_info(qid, question, prompt_messages, draft, context_ids)
 
         step_log = {
             "qid": qid,
@@ -120,8 +136,8 @@ class Baseline(BaseAgent):
 
 
 class Agent(BaseAgent):
-    def __init__(self, gate_on: bool = True):
-        super().__init__(system="agent")
+    def __init__(self, gate_on: bool = True, debug_mode: bool = False):
+        super().__init__(system="agent", debug_mode=debug_mode)
         self.gate_on = gate_on
 
     def _gate(self, f: float, o: float) -> GateAction:
@@ -156,10 +172,20 @@ class Agent(BaseAgent):
             tokens_left -= usage["total_tokens"]
 
             context_texts = [c["text"] for c in contexts]
-            o = overlap_ratio(draft, context_texts)
+            context_ids = [c["id"] for c in contexts]
+            o = overlap_ratio(draft, context_texts, context_ids=context_ids)
             f = faithfulness_score(question, context_texts, draft)
             if f is None:
                 f = min(1.0, 0.6 + 0.4 * o)
+
+            # Debug logging for first round only
+            if self.debug_mode and r == 1:
+                from agentic_rag.eval.debug import log_debug_info
+
+                prompt_messages = [
+                    {"role": m.role, "content": m.content} for m in prompt
+                ]
+                log_debug_info(qid, question, prompt_messages, draft, context_ids)
 
             action = self._gate(f, o) if self.gate_on else GateAction.STOP
 

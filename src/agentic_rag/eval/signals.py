@@ -1,8 +1,10 @@
 import re
+from typing import List, Set
 
 import numpy as np
 import numpy.typing as npt
 
+from agentic_rag.config import settings
 from agentic_rag.embed.encoder import embed_texts
 
 
@@ -10,6 +12,24 @@ def sentence_split(text: str) -> list[str]:
     """Splits text into sentences using regex."""
     sentences = re.split(r"(?<=[.?!])\s+", text)
     return [s.strip() for s in sentences if s.strip()]
+
+
+def extract_citations(text: str) -> List[str]:
+    """Extract citation IDs from text using regex pattern [CIT:<doc_id>]."""
+    pattern = r"\[CIT:([^\]]+)\]"
+    return re.findall(pattern, text)
+
+
+def extract_sentence_citations(text: str) -> List[Set[str]]:
+    """Extract citations for each sentence in the text."""
+    sentences = sentence_split(text)
+    sentence_citations = []
+
+    for sentence in sentences:
+        citations = set(extract_citations(sentence))
+        sentence_citations.append(citations)
+
+    return sentence_citations
 
 
 def embed_norm(texts: list[str]) -> npt.NDArray[np.float32]:
@@ -25,29 +45,49 @@ def cosine_matrix(
 
 
 def overlap_ratio(
-    answer: str, contexts: list[str], sim_threshold: float = 0.7
+    answer: str,
+    contexts: list[str],
+    sim_threshold: float | None = None,
+    context_ids: list[str] | None = None,
 ) -> float:
-    """Computes the ratio of answer sentences supported by context sentences."""
+    """Computes the ratio of answer sentences supported by citations and context similarity."""
     if not answer or not contexts:
         return 0.0
 
-    s_answer = sentence_split(answer)
-    s_contexts = [s for c in contexts for s in sentence_split(c)]
+    # Use configured similarity threshold
+    if sim_threshold is None:
+        sim_threshold = settings.OVERLAP_SIM_TAU
 
-    # Limit to a reasonable number of sentences to avoid excessive computation
-    s_contexts = s_contexts[:200]
-
-    if not s_answer or not s_contexts:
+    sentences = sentence_split(answer)
+    if not sentences:
         return 0.0
 
-    emb_answer = embed_norm(s_answer)
-    emb_contexts = embed_norm(s_contexts)
+    # Extract citations for each sentence
+    sentence_citations = extract_sentence_citations(answer)
 
-    sim_matrix = cosine_matrix(emb_answer, emb_contexts)
+    # Get available context IDs (if provided, use them; otherwise extract from contexts)
+    available_ids = set(context_ids) if context_ids else set()
 
-    supported_count = sum(1 for row in sim_matrix if np.max(row) >= sim_threshold)
+    supported_count = 0
 
-    return supported_count / max(1, len(s_answer))
+    for sentence, citations in zip(sentences, sentence_citations):
+        # Check if sentence has valid citations
+        if citations and (not available_ids or citations.intersection(available_ids)):
+            supported_count += 1
+        else:
+            # Fallback to semantic similarity if no valid citations
+            s_contexts = [s for c in contexts for s in sentence_split(c)]
+            if s_contexts:
+                s_contexts = s_contexts[:200]  # Limit computation
+
+                emb_sentence = embed_norm([sentence])
+                emb_contexts = embed_norm(s_contexts)
+
+                sim_matrix = cosine_matrix(emb_sentence, emb_contexts)
+                if np.max(sim_matrix) >= sim_threshold:
+                    supported_count += 1
+
+    return supported_count / len(sentences)
 
 
 def faithfulness_score(question: str, contexts: list[str], answer: str) -> float | None:

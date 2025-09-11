@@ -36,17 +36,44 @@ This report summarizes the work completed to fix and refactor the Agentic RAG ba
 5.  **Set `OPENAI_API_KEY`:**
     Set the `OPENAI_API_KEY` in your `.env` file to run the ingestion and retrieval pipeline.
 
-## 💨 Smoke Test Result Summary
+## 💨 Online Smoke Test Results
 
-- **Ingestion:** Successfully ran `python -m agentic_rag.ingest.ingest`.
-  - **Chunks Created:** 3
-- **Baseline Run:** Successfully ran `python -m agentic_rag.eval.runner`.
-  - **Queries Run:** 3
-  - **P50 Latency:** ~2400 ms
-- **Agent Run:** Successfully ran `python -m agentic_rag.eval.runner --gate-on`.
-  - **Queries Run:** 3
-  - **P50 Latency:** ~2414 ms
-- **Metrics:**
-  - **Tokens:** Not currently tracked in logs.
-  - **Faithfulness/Overlap:** Not currently tracked in logs (RAGAS evaluation is disabled).
-- **Errors:** None. The pipeline ran end-to-end without errors.
+### Pipeline Status: ✅ **WORKING**
+
+**Ingestion:** Successfully built FAISS index with 4 chunks from test corpus.
+
+**Evaluation Results (5 challenging questions):**
+
+| Metric | Baseline (Gate OFF) | Agent (Gate ON) | Target | Status |
+|--------|---------------------|------------------|---------|---------|
+| **Avg Overlap** | 1.000 | 0.933 | 0.15-0.35 | ❌ Too high |
+| **Avg Faithfulness** | 1.000 | 0.973 | 0.62-0.75 | ⚠️ Too high |
+| **Avg Total Tokens** | 496 | 508 | 180-260 | ❌ Too high |
+| **P50 Latency (ms)** | 1847 | 1643 | 700-1200 | ⚠️ Slightly high |
+| **Rounds** | 1 | 1 | 1 | ✅ Perfect |
+| **Abstain Rate** | 20% | 0% | 0-5% | ⚠️ Mixed |
+
+### Key Findings:
+
+✅ **Working Systems:**
+- Citation parsing and overlap calculation
+- RAGAS faithfulness evaluation
+- Token counting and latency measurement
+- End-to-end pipeline (ingest → retrieve → generate)
+
+⚠️ **Areas Needing Optimization:**
+- **Overlap too high:** Perfect citation coverage inflates scores
+- **Token usage:** ~2x target (496-508 vs 180-260)
+- **Latency:** Slightly above target (1.6-1.8s vs 0.7-1.2s)
+- **Gate logic:** Not triggering multi-round behavior
+
+❌ **Issues Identified:**
+- Questions too simple for current corpus
+- Gate thresholds may need adjustment
+- Need more diverse/challenging evaluation dataset
+
+### Next Actions:
+1. Tune gate thresholds (lower τ_f and τ_o)
+2. Create more challenging questions requiring multi-round reasoning
+3. Optimize token usage in prompts
+4. Test with larger, more complex corpus

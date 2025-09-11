@@ -44,6 +44,9 @@ _max_rounds_option = typer.Option(
 )
 _tau_f_option = typer.Option(None, "--tau-f", help="Faithfulness threshold.")
 _tau_o_option = typer.Option(None, "--tau-o", help="Overlap threshold.")
+_debug_prompts_option = typer.Option(
+    False, "--debug-prompts", help="Enable debug logging for first 3 queries."
+)
 
 
 @app.command()
@@ -56,6 +59,7 @@ def run(
     max_rounds: Optional[int] = _max_rounds_option,
     tau_f: Optional[float] = _tau_f_option,
     tau_o: Optional[float] = _tau_o_option,
+    debug_prompts: bool = _debug_prompts_option,
 ):
     """Runs an evaluation of the Agentic RAG system."""
 
@@ -72,9 +76,9 @@ def run(
     # Select system
     model: Agent | Baseline
     if system == "agent":
-        model = Agent(gate_on=gate_on)
+        model = Agent(gate_on=gate_on, debug_mode=debug_prompts)
     elif system == "baseline":
-        model = Baseline()
+        model = Baseline(debug_mode=debug_prompts)
     else:
         console.print(f"[bold red]Unknown system: {system}[/bold red]")
         raise typer.Exit(1)
@@ -85,8 +89,11 @@ def run(
 
     # Run evaluation
     results = []
-    for item in questions:
+    for idx, item in enumerate(questions):
         console.print(f"Processing qid: {item['id']}")
+        # Enable debug only for first 3 queries
+        if debug_prompts and idx >= 3:
+            model.debug_mode = False
         summary = model.answer(question=item["question"], qid=item["id"])
         results.append(summary)
 
