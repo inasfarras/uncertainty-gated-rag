@@ -33,9 +33,27 @@ def _normalize(vecs: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
 
 
 def embed_texts(texts: list[str]) -> npt.NDArray[np.float32]:
-    if settings.EMBED_BACKEND != "openai":
-        raise RuntimeError("Only 'openai' embed backend is enabled for now.")
-    client = get_openai()
-    embs = client.embed(texts, embed_model=settings.EMBED_MODEL)
-    arr = np.array(embs, dtype=np.float32)
-    return _normalize(arr)
+    if settings.EMBED_BACKEND == "mock":
+        # Mock embeddings: deterministic hash-based vectors
+        import hashlib
+
+        embs = []
+        for text in texts:
+            # Create deterministic embedding from text hash
+            hash_bytes = hashlib.md5(text.encode()).digest()
+            # Convert to float vector (1536 dimensions to match OpenAI)
+            vec = np.frombuffer(hash_bytes * 96, dtype=np.uint8)[:1536].astype(
+                np.float32
+            )
+            # Normalize to [-1, 1] range
+            vec = (vec / 127.5) - 1.0
+            embs.append(vec)
+        arr = np.array(embs, dtype=np.float32)
+        return _normalize(arr)
+    elif settings.EMBED_BACKEND == "openai":
+        client = get_openai()
+        embs = client.embed(texts, embed_model=settings.EMBED_MODEL)
+        arr = np.array(embs, dtype=np.float32)
+        return _normalize(arr)
+    else:
+        raise RuntimeError(f"Unknown embed backend: {settings.EMBED_BACKEND}")

@@ -9,11 +9,11 @@ class Settings(BaseSettings):
     OPENAI_ORG: str | None = None
 
     LLM_MODEL: str = "gpt-4o-mini"
-    EMBED_BACKEND: Literal["openai", "st"] = "openai"
+    EMBED_BACKEND: Literal["openai", "st", "mock"] = "openai"
     EMBED_MODEL: str = "text-embedding-3-small"
     ST_EMBED_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
 
-    FAISS_INDEX_PATH: str = "artifacts/test_faiss"
+    FAISS_INDEX_PATH: str = "artifacts/crag_faiss"
     MAX_TOKENS_TOTAL: int = 3500
     MAX_ROUNDS: int = 2
     RETRIEVAL_K: int = 8
