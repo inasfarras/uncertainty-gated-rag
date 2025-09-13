@@ -15,6 +15,8 @@ class Settings(BaseSettings):
 
     FAISS_INDEX_PATH: str = "artifacts/crag_faiss"
     MAX_TOKENS_TOTAL: int = 3500
+    # Cap on total context tokens packed into prompts
+    CONTEXT_TOKEN_CAP: int = 2000
     MAX_ROUNDS: int = 2
     RETRIEVAL_K: int = 8
     GRAPH_K: int = 20

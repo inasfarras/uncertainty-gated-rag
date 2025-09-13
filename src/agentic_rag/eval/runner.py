@@ -10,6 +10,11 @@ from rich.table import Table
 
 from agentic_rag.agent.loop import Agent, Baseline
 from agentic_rag.config import settings
+from agentic_rag.eval.signals import (
+    em_f1,
+    faithfulness_fallback,
+    sentence_support,
+)
 
 app = typer.Typer()
 console = Console()
@@ -95,6 +100,33 @@ def run(
         if debug_prompts and idx >= 3:
             model.debug_mode = False
         summary = model.answer(question=item["question"], qid=item["id"])
+
+        # Build ctx_map from exact contexts used
+        ctx_list = summary.get("contexts", []) or []
+        ctx_map = {c["id"]: c["text"] for c in ctx_list}
+        sup = sentence_support(summary.get("final_answer", ""), ctx_map, tau_sim=settings.OVERLAP_SIM_TAU)
+        final_o = float(sup["overlap"]) if isinstance(sup.get("overlap"), float) else 0.0
+        final_f = faithfulness_fallback(summary.get("final_answer", ""), item.get("gold"), final_o)
+        ef = em_f1(summary.get("final_answer", ""), item.get("gold"))
+        abstain = 1 if (summary.get("final_answer", "").strip() == "I don't know") else 0
+
+        # Update summary with hardened metrics
+        summary["final_o"] = final_o
+        summary["final_f"] = final_f
+        summary["em"] = ef["em"]
+        summary["f1"] = ef["f1"]
+        summary["abstain"] = abstain
+        summary["idk_with_citation_count"] = sup.get("idk_with_citation_count", 0)
+
+        # Dump debug prompt and raw output for first 3 when requested
+        if debug_prompts and idx < 3:
+            debug_dir = Path("logs/debug")
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            dp = summary.get("debug_prompt", "")
+            with open(debug_dir / f"{item['id']}_prompt.txt", "w", encoding="utf-8") as f:
+                f.write(dp)
+            with open(debug_dir / f"{item['id']}_output.txt", "w", encoding="utf-8") as f:
+                f.write(summary.get("final_answer", ""))
         results.append(summary)
 
     # Logging and reporting
@@ -123,9 +155,16 @@ def run(
         "id",
         "final_f",
         "final_o",
+        "em",
+        "f1",
+        "abstain",
+        "idk_with_citation_count",
         "total_tokens",
         "latency_ms",
         "rounds",
+        "n_ctx_blocks",
+        "context_tokens",
+        "action",
     ]
     df[csv_cols].to_csv(csv_path, index=False)
     console.print(f"CSV summary saved to [cyan]{csv_path}[/cyan]")
@@ -138,8 +177,12 @@ def run(
     table.add_row("Count", str(len(df)))
     table.add_row("Avg Faithfulness", f"{df['final_f'].mean():.3f}")
     table.add_row("Avg Overlap", f"{df['final_o'].mean():.3f}")
+    table.add_row("Avg EM", f"{df['em'].mean():.3f}")
+    table.add_row("Avg F1", f"{df['f1'].mean():.3f}")
+    table.add_row("Abstain Rate", f"{df['abstain'].mean():.3f}")
     table.add_row("Avg Total Tokens", f"{df['total_tokens'].mean():.0f}")
     table.add_row("P50 Latency (ms)", f"{df['latency_ms'].median():.0f}")
+    table.add_row("IDK+Cit Count", str(int(df["idk_with_citation_count"].sum())))
 
     console.print(table)
 

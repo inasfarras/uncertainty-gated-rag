@@ -1,5 +1,6 @@
 import glob
 import os
+import re
 from typing import Literal, cast
 
 import numpy as np
@@ -15,11 +16,17 @@ from agentic_rag.store.faiss_store import build_index
 app = typer.Typer()
 
 
+def _sanitize_doc_id(file_stem: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_\-]", "_", file_stem)
+
+
 def load_directory(input_dir: str) -> list[dict]:
     out = []
     for path in glob.glob(os.path.join(input_dir, "**/*.txt"), recursive=True):
         with open(path, encoding="utf-8", errors="ignore") as f:
-            out.append({"id": os.path.relpath(path, input_dir), "text": f.read()})
+            stem = os.path.splitext(os.path.basename(path))[0]
+            doc_id = _sanitize_doc_id(stem)
+            out.append({"doc_id": doc_id, "text": f.read()})
     return out
 
 
@@ -38,7 +45,8 @@ def main(
     for d in docs:
         chunks = chunk_text(d["text"])
         for i, ch in enumerate(chunks):
-            records.append({"id": f"{d['id']}#{i}", "text": ch})
+            # Store chunk ids as {doc_id}__{i}; doc_id is sanitized [A-Za-z0-9_-]+
+            records.append({"id": f"{d['doc_id']}__{i}", "text": ch})
     if not records:
         print("[red]No .txt files found.[/red]")
         raise SystemExit(1)
