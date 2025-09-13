@@ -2,6 +2,7 @@ import os
 from typing import Dict, List, Tuple, TypedDict
 
 import pandas as pd
+import re
 import tiktoken
 
 from agentic_rag.config import settings
@@ -35,7 +36,7 @@ class VectorRetriever:
         except Exception:
             return max(1, len(text or "") // 4)
 
-    def retrieve(self, query: str, k: int) -> Tuple[List[dict], Dict[str, object]]:
+    def retrieve_pack(self, query: str, k: int) -> Tuple[List[dict], Dict[str, object]]:
         """Retrieve top-k, pack under token cap, return contexts and stats.
 
         Returns:
@@ -48,8 +49,10 @@ class VectorRetriever:
         # Map chunk hits to best chunk per doc_id
         best_by_doc: Dict[str, Tuple[str, float]] = {}
         for chunk_id, score in hits:
-            # Expect chunk ids like {doc_id}__{i}
-            doc_id = chunk_id.split("__")[0]
+            # Expect chunk ids like {doc_id}__{i}; if not, fallback to full id
+            raw_doc_id = chunk_id.split("__")[0]
+            # Sanitize doc id to allowed pattern [A-Za-z0-9_-]
+            doc_id = re.sub(r"[^A-Za-z0-9_\-]", "_", raw_doc_id)
             if (doc_id not in best_by_doc) or (score > best_by_doc[doc_id][1]):
                 best_by_doc[doc_id] = (chunk_id, score)
 
@@ -75,3 +78,13 @@ class VectorRetriever:
             "retrieved_ids": retrieved_ids,
         }
         return contexts, stats
+
+    def retrieve(self, query: str, k: int) -> List[ContextChunk]:
+        """Backwards-compatible retrieve that returns raw top-k chunks (no packing)."""
+        qvec = embed_texts([query])[0]
+        hits = self.store.search(qvec, k)
+        out: List[ContextChunk] = []
+        for chunk_id, score in hits:
+            text = self.chunks.loc[chunk_id, "text"]
+            out.append({"id": chunk_id, "text": text, "score": score})
+        return out

@@ -31,7 +31,9 @@ def is_global_question(q: str) -> bool:
         return len(q.split()) >= 20
 
 
-def build_prompt(contexts: List[ContextChunk], question: str) -> tuple[List[ChatMessage], str]:
+def build_prompt(
+    contexts: List[ContextChunk], question: str
+) -> tuple[List[ChatMessage], str]:
     """Builds a prompt for the LLM and returns messages and a debug string."""
     # Render context blocks
     context_blocks = []
@@ -47,10 +49,7 @@ def build_prompt(contexts: List[ContextChunk], question: str) -> tuple[List[Chat
         "Keep answers concise and factual."
     )
 
-    user_content = (
-        f"QUESTION:\n{question}\n\n"
-        f"CONTEXT:\n{context_str}"
-    )
+    user_content = f"QUESTION:\n{question}\n\n" f"CONTEXT:\n{context_str}"
 
     debug_prompt = f"SYSTEM:\n{system_content}\n\n{user_content}"
     return [
@@ -62,6 +61,7 @@ def build_prompt(contexts: List[ContextChunk], question: str) -> tuple[List[Chat
 def _normalize_answer(text: str, allowed_ids: List[str]) -> str:
     if is_idk(text):
         return "I don't know"
+
     # Remove any non-conforming citations; keep only [CIT:<allowed_id>]
     def _repl(m: Any) -> str:  # type: ignore[name-defined]
         cid = m.group("id")
@@ -108,11 +108,13 @@ class Baseline(BaseAgent):
         tokens_left = settings.MAX_TOKENS_TOTAL
         k = settings.RETRIEVAL_K
 
-        contexts, stats = self.retriever.retrieve(question, k=k)
+        contexts, stats = self.retriever.retrieve_pack(question, k=k)
         prompt, debug_prompt = build_prompt(contexts, question)
 
         with timer() as t:
-            draft, usage = self.llm.chat(messages=prompt, max_tokens=256, temperature=0.0)
+            draft, usage = self.llm.chat(
+                messages=prompt, max_tokens=256, temperature=0.0
+            )
         latency_ms = t()
 
         tokens_left -= usage["total_tokens"]
@@ -198,11 +200,13 @@ class Agent(BaseAgent):
         while r < settings.MAX_ROUNDS and tokens_left > 0:
             r += 1
 
-            contexts, stats = self.retriever.retrieve(question, k=k)
+            contexts, stats = self.retriever.retrieve_pack(question, k=k)
             prompt, debug_prompt = build_prompt(contexts, question)
 
             with timer() as t:
-                draft, usage = self.llm.chat(messages=prompt, max_tokens=256, temperature=0.0)
+                draft, usage = self.llm.chat(
+                    messages=prompt, max_tokens=256, temperature=0.0
+                )
             latency_ms = t()
             latencies.append(latency_ms)
 
