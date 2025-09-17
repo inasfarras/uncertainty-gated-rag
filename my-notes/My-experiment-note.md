@@ -32,14 +32,39 @@ python -m agentic_rag.ingest.ingest --input data/crag_corpus_html --out artifact
 
 ## 3. Run Evaluations
 
-Run the evaluation for both the baseline RAG system and the agentic system.
+Run the evaluation for both the baseline RAG system and the agentic system with UncertaintyGate.
 
 ```powershell
-# Run the baseline system (gate OFF)
-python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system baseline --gate-off --n 200
+# Run the baseline system (simple RAG without gating)
+python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system baseline --n 200
 
-# Run the agent system (gate ON)
+# Run the agent system with UncertaintyGate ON (smart stopping, MMR, reranking, HyDE, REFLECT)
 python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system agent --gate-on --n 200
+
+# Run the agent system with gate OFF (for comparison - always runs full rounds)
+python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system agent --gate-off --n 200
 ```
+
+## 4. Test Runs (Small Scale)
+
+For quick testing and debugging, use smaller sample sizes:
+
+```powershell
+# Quick test with gate ON (10 questions)
+python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system agent --gate-on --n 10
+
+# Quick test with gate OFF (10 questions)
+python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system agent --gate-off --n 10
+```
+
+## 5. Enhanced Features
+
+The current agent system includes:
+- **UncertaintyGate**: Smart decision making (STOP/REFLECT/RETRIEVE_MORE)
+- **MMR Diversification**: Reduces redundancy in retrieved contexts (λ=0.4)
+- **BGE Reranking**: Cross-encoder reranking for better relevance (optional)
+- **HyDE Query Rewriting**: Hypothetical document embedding for better retrieval (optional)
+- **REFLECT**: Self-correction mechanism for improving answers
+- **Enhanced Debug Output**: Detailed progress tracking with emojis
 
 ---

@@ -8,13 +8,19 @@ import numpy.typing as npt
 from agentic_rag.config import settings
 from agentic_rag.embed.encoder import embed_texts
 
-
 # Strict citation regex
 CIT_RE = re.compile(r"\[CIT:(?P<id>[A-Za-z0-9_\-]+)\]")
+# Expose alternate alias with non-named group for external consumers/tests
+CITATION_RE = re.compile(r"\[CIT:([A-Za-z0-9_\-]+)\]")
 
 
 def split_sentences(text: str) -> list[str]:
-    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+    # Don't split on sentence-ending punctuation if it's followed by a citation
+    return [
+        s.strip()
+        for s in re.split(r"(?<=[.!?])\s+(?!\[CIT:)", text.strip())
+        if s.strip()
+    ]
 
 
 def is_idk(s: str) -> bool:
@@ -38,25 +44,41 @@ def embed_norm(texts: list[str]) -> npt.NDArray[np.float32]:
     return embed_texts(texts)
 
 
-def cosine_matrix(A: npt.NDArray[np.float32], B: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
+def cosine_matrix(
+    A: npt.NDArray[np.float32], B: npt.NDArray[np.float32]
+) -> npt.NDArray[np.float32]:
     return np.dot(A, B.T)
 
 
-def sentence_support(answer: str, ctx_map: Dict[str, str], tau_sim: float | None = None) -> Dict[str, float | int]:
+def sentence_support(
+    answer: str, ctx_map: Dict[str, str], tau_sim: float | None = None
+) -> Dict[str, float | int]:
     if tau_sim is None:
         tau_sim = settings.OVERLAP_SIM_TAU
 
     if not answer:
-        return {"overlap": 0.0, "sentences": 0, "supported": 0, "idk_with_citation_count": 0}
+        return {
+            "overlap": 0.0,
+            "sentences": 0,
+            "supported": 0,
+            "idk_with_citation_count": 0,
+        }
 
     sents = split_sentences(answer)
     if not sents:
-        return {"overlap": 0.0, "sentences": 0, "supported": 0, "idk_with_citation_count": 0}
+        return {
+            "overlap": 0.0,
+            "sentences": 0,
+            "supported": 0,
+            "idk_with_citation_count": 0,
+        }
 
     supported = 0
     idk_with_cit = 0
     for s in sents:
-        if is_idk(s):
+        # Check for IDK *after* stripping citations
+        s_no_cit = CIT_RE.sub("", s).strip()
+        if is_idk(s_no_cit):
             # IDK sentences cannot be supported and must not have a citation
             if extract_citations(s):
                 idk_with_cit += 1
@@ -72,14 +94,19 @@ def sentence_support(answer: str, ctx_map: Dict[str, str], tau_sim: float | None
 
         # Compute similarity between sentence and the matched chunk
         # Deterministic TF-IDF-like proxy using embeddings
-        emb_s = embed_norm([s])
+        emb_s = embed_norm([s_no_cit])
         emb_c = embed_norm([ctx_map[doc_id]])
         sim = float(cosine_matrix(emb_s, emb_c)[0, 0])
-        if sim >= (tau_sim or 0.58):
+        if sim >= (tau_sim or 0.60):
             supported += 1
 
     overlap = supported / len(sents)
-    return {"overlap": overlap, "sentences": len(sents), "supported": supported, "idk_with_citation_count": idk_with_cit}
+    return {
+        "overlap": overlap,
+        "sentences": len(sents),
+        "supported": supported,
+        "idk_with_citation_count": idk_with_cit,
+    }
 
 
 def faithfulness_fallback(answer: str, gold: str | None, overlap: float) -> float:
@@ -129,6 +156,24 @@ def em_f1(pred: str, gold: str | None) -> Dict[str, float]:
     return {"em": em, "f1": f1}
 
 
+# Aliases to match alternate API names requested
+def normalize_text(s: str) -> str:
+    return _normalize_text(s)
+
+
+def compute_em_f1(gold: str | list[str] | None, pred: str) -> tuple[float, float]:
+    # If gold list provided, choose max over candidates
+    if isinstance(gold, list):
+        if not gold:
+            return (0.0, 0.0)
+        pairs = [em_f1(pred, g) for g in gold]
+        em = max(p["em"] for p in pairs)
+        f1 = max(p["f1"] for p in pairs)
+        return (float(em), float(f1))
+    m = em_f1(pred, gold)
+    return (float(m["em"]), float(m["f1"]))
+
+
 # Backwards-compatible helpers used in older code/tests
 def sentence_split(text: str) -> list[str]:
     return split_sentences(text)
@@ -170,7 +215,9 @@ def faithfulness_score(question: str, contexts: list[str], answer: str) -> float
         from ragas import evaluate
         from ragas.metrics import faithfulness
 
-        dataset = Dataset.from_dict({"question": [question], "contexts": [contexts], "answer": [answer]})
+        dataset = Dataset.from_dict(
+            {"question": [question], "contexts": [contexts], "answer": [answer]}
+        )
         result = evaluate(dataset, metrics=[faithfulness])
         scores = result["faithfulness"]
         return scores[0] if scores else None
