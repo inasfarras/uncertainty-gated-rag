@@ -42,6 +42,8 @@ class UncertaintyGate(BaseGate):
         self.tau_f = settings.FAITHFULNESS_TAU
         self.tau_o = settings.OVERLAP_TAU
         self.tau_uncertain = settings.UNCERTAINTY_TAU
+        self.low_budget_tokens = settings.LOW_BUDGET_TOKENS
+        self.max_tokens_total = settings.MAX_TOKENS_TOTAL
 
         # Enhanced adaptive weights
         self.base_weights = {
@@ -72,6 +74,23 @@ class UncertaintyGate(BaseGate):
         self._enable_caching = getattr(settings, "ENABLE_GATE_CACHING", True)
 
     def decide(self, signals: GateSignals) -> str:
+        # Use caching if enabled
+        if self._enable_caching:
+            cache_key = self._create_cache_key(signals)
+            cached_result = self._get_from_cache(cache_key)
+            if cached_result is not None:
+                if signals.extras is not None:
+                    signals.extras.update(cached_result["extras"])
+                return cached_result["decision"]
+
+            # Compute decision and cache it
+            decision = self._decide_uncached(signals)
+            self._store_in_cache(cache_key, decision, signals.extras or {})
+            return decision
+        else:
+            return self._decide_uncached(signals)
+
+    def _decide_uncached(self, signals: GateSignals) -> str:
         # Early high-confidence stop condition (optimized)
         if signals.faith >= self.tau_f and signals.overlap >= self.tau_o:
             if signals.extras is not None:
@@ -79,12 +98,12 @@ class UncertaintyGate(BaseGate):
                 signals.extras["stop_reason"] = "high_confidence"
             return GateAction.STOP
 
-        # Fast budget check
-        if signals.budget_left_tokens < 200:
+        # Fast budget check using configured threshold
+        if signals.budget_left_tokens < self.low_budget_tokens:
             if signals.extras is not None:
                 signals.extras["uncertainty_score"] = 1.0
                 signals.extras["stop_reason"] = "budget_exhausted"
-            return GateAction.STOP
+            return GateAction.STOP_LOW_BUDGET
 
         # Enhanced uncertainty calculation with adaptive weights
         weights = self._get_adaptive_weights(signals)
@@ -169,12 +188,47 @@ class UncertaintyGate(BaseGate):
         ):  # Very long answers might be verbose/uncertain
             uncertainty += 0.05
 
-        # Budget pressure
-        budget_ratio = signals.budget_left_tokens / 3500  # Assuming max budget
+        # Budget pressure using configured max tokens
+        budget_ratio = signals.budget_left_tokens / self.max_tokens_total
         if budget_ratio < 0.2:  # Low budget remaining
             uncertainty *= 1.2  # Increase uncertainty to encourage stopping
 
         return min(1.0, uncertainty)
+
+    def _create_cache_key(self, signals: GateSignals) -> str:
+        """Create a cache key from gate signals."""
+        # Create a hash-like key from key signal values (rounded for cache efficiency)
+        key_components = [
+            f"f:{signals.faith:.2f}",
+            f"o:{signals.overlap:.2f}",
+            f"lex:{signals.lexical_uncertainty:.2f}",
+            f"comp:{signals.completeness:.2f}",
+            f"sem:{signals.semantic_coherence:.2f}",
+            f"r:{signals.round_idx}",
+            f"nov:{signals.novelty_ratio:.2f}",
+            f"budget:{signals.budget_left_tokens // 100}00",  # Round to nearest 100
+        ]
+        return "|".join(key_components)
+
+    def _get_from_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """Get cached decision if available."""
+        if cache_key in self._cache:
+            self._cache_hits += 1
+            return self._cache[cache_key]
+        self._cache_misses += 1
+        return None
+
+    def _store_in_cache(
+        self, cache_key: str, decision: str, extras: Dict[str, Any]
+    ) -> None:
+        """Store decision in cache."""
+        # Implement simple LRU by removing oldest entries when cache gets too large
+        if len(self._cache) >= 100:  # Max cache size
+            # Remove oldest entry (first in dict)
+            oldest_key = next(iter(self._cache))
+            del self._cache[oldest_key]
+
+        self._cache[cache_key] = {"decision": decision, "extras": extras.copy()}
 
     def get_cache_stats(self) -> Dict[str, Any]:
         """Return cache performance statistics."""

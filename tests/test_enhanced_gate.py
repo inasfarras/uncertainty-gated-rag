@@ -95,6 +95,23 @@ def test_enhanced_uncertainty_gate():
 
     assert gate.decide(high_conf_signals) == GateAction.STOP
 
+    # Test low budget scenario
+    low_budget_signals = GateSignals(
+        faith=0.5,
+        overlap=0.5,
+        lexical_uncertainty=0.3,
+        completeness=0.8,
+        semantic_coherence=0.8,
+        answer_length=50,
+        question_complexity=0.5,
+        budget_left_tokens=100,  # Below LOW_BUDGET_TOKENS (500)
+        round_idx=0,
+        has_reflect_left=True,
+        novelty_ratio=0.6,
+    )
+
+    assert gate.decide(low_budget_signals) == GateAction.STOP_LOW_BUDGET
+
     # High uncertainty scenario
     high_unc_signals = GateSignals(
         faith=0.3,
@@ -187,9 +204,12 @@ def test_gate_caching_performance():
 
     assert result1 == result2
 
-    # Check cache stats
+    # Check cache stats - should have 1 hit and 1 miss
     stats = gate.get_cache_stats()
-    assert stats["cache_size"] >= 0
+    assert stats["cache_size"] >= 1
+    assert stats["cache_hits"] >= 1
+    assert stats["cache_misses"] >= 1
+    assert stats["hit_rate"] > 0
 
 
 def test_performance_with_batch_processing():

@@ -882,6 +882,7 @@ class Agent(BaseAgent):
                     "STOP_PRE_LOW_NOVELTY",
                 )
                 or action == GateAction.STOP
+                or action == GateAction.STOP_LOW_BUDGET
             ):
                 print(f"🏁 STOPPING with action: {action}")
                 break
