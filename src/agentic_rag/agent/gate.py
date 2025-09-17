@@ -1,5 +1,6 @@
-"""Uncertainty gate for determining when to continue RAG iterations."""
+"""Enhanced uncertainty gate for determining when to continue RAG iterations."""
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -12,6 +13,7 @@ class GateAction:
     RETRIEVE_MORE = "RETRIEVE_MORE"
     REFLECT = "REFLECT"
     ABSTAIN = "ABSTAIN"
+    STOP_LOW_BUDGET = "STOP_LOW_BUDGET"  # New: explicit budget stop
 
 
 @dataclass
@@ -24,6 +26,9 @@ class GateSignals:
     round_idx: int
     has_reflect_left: bool
     novelty_ratio: float
+    semantic_coherence: float = 1.0  # New: semantic coherence score
+    answer_length: int = 0  # New: response length for context
+    question_complexity: float = 0.5  # New: question complexity indicator
     extras: Optional[Dict[str, Any]] = None
 
 
@@ -37,39 +42,151 @@ class UncertaintyGate(BaseGate):
         self.tau_f = settings.FAITHFULNESS_TAU
         self.tau_o = settings.OVERLAP_TAU
         self.tau_uncertain = settings.UNCERTAINTY_TAU
-        # Weights for uncertainty components
-        self.w_f = 0.4
-        self.w_o = 0.4
-        self.w_lex = 0.1
-        self.w_comp = 0.1
 
-    def decide(self, signals: GateSignals) -> str:
-        # High-confidence stop condition
-        if signals.faith >= self.tau_f and signals.overlap >= self.tau_o:
-            return GateAction.STOP
+        # Enhanced adaptive weights
+        self.base_weights = {
+            "faith": 0.35,
+            "overlap": 0.35,
+            "lexical": 0.10,
+            "completeness": 0.10,
+            "semantic": 0.10,
+        }
 
-        # Weighted uncertainty score
-        uncertainty = (
-            self.w_f * (1 - signals.faith)
-            + self.w_o * (1 - signals.overlap)
-            + self.w_lex * signals.lexical_uncertainty
-            + self.w_comp * (1 - signals.completeness)
+        # Cached patterns for efficiency
+        self._uncertainty_pattern = re.compile(
+            r"\b(might|maybe|perhaps|possibly|likely|probably|seems|appears|"
+            r"suggests|indicates|unclear|uncertain|not sure|don\'t know|"
+            r"can\'t say|difficult to determine|unsure|ambiguous)\b",
+            re.IGNORECASE,
+        )
+        self._confidence_pattern = re.compile(
+            r"\b(definitely|certainly|clearly|obviously|undoubtedly|"
+            r"absolutely|precisely|exactly|specifically|confirmed)\b",
+            re.IGNORECASE,
         )
 
-        # Novelty penalty
-        if signals.round_idx > 0 and signals.novelty_ratio < 0.2:
-            uncertainty += 0.1
+        # Performance cache and settings
+        self._cache: Dict[str, Any] = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._enable_caching = getattr(settings, "ENABLE_GATE_CACHING", True)
 
-        # Store uncertainty for logging
+    def decide(self, signals: GateSignals) -> str:
+        # Early high-confidence stop condition (optimized)
+        if signals.faith >= self.tau_f and signals.overlap >= self.tau_o:
+            if signals.extras is not None:
+                signals.extras["uncertainty_score"] = 0.0
+                signals.extras["stop_reason"] = "high_confidence"
+            return GateAction.STOP
+
+        # Fast budget check
+        if signals.budget_left_tokens < 200:
+            if signals.extras is not None:
+                signals.extras["uncertainty_score"] = 1.0
+                signals.extras["stop_reason"] = "budget_exhausted"
+            return GateAction.STOP
+
+        # Enhanced uncertainty calculation with adaptive weights
+        weights = self._get_adaptive_weights(signals)
+        uncertainty = self._calculate_enhanced_uncertainty(signals, weights)
+
+        # Enhanced novelty and stagnation penalties
+        uncertainty = self._apply_context_penalties(uncertainty, signals)
+
+        # Store detailed metrics for logging
         if signals.extras is not None:
             signals.extras["uncertainty_score"] = uncertainty
+            signals.extras["adaptive_weights"] = weights
+            signals.extras["cache_hit_rate"] = self._cache_hits / max(
+                1, self._cache_hits + self._cache_misses
+            )
 
-        if signals.has_reflect_left and uncertainty >= self.tau_uncertain:
-            return GateAction.REFLECT
+        # Decision logic with enhanced thresholds
+        if uncertainty >= self.tau_uncertain * 1.2:  # High uncertainty
+            if signals.has_reflect_left and signals.round_idx > 0:
+                return GateAction.REFLECT
+            else:
+                return GateAction.RETRIEVE_MORE
+        elif uncertainty >= self.tau_uncertain:  # Medium uncertainty
+            if signals.has_reflect_left and signals.semantic_coherence < 0.7:
+                return GateAction.REFLECT
+            return GateAction.RETRIEVE_MORE
+        else:  # Low uncertainty
+            return GateAction.STOP
 
-        return GateAction.RETRIEVE_MORE
+    def _get_adaptive_weights(self, signals: GateSignals) -> Dict[str, float]:
+        """Adapt weights based on question complexity and context."""
+        weights = self.base_weights.copy()
+
+        # Adjust weights based on question complexity
+        if signals.question_complexity > 0.7:  # Complex questions
+            weights["faith"] *= 1.2
+            weights["semantic"] *= 1.3
+        elif signals.question_complexity < 0.3:  # Simple questions
+            weights["overlap"] *= 1.2
+            weights["completeness"] *= 1.1
+
+        # Adjust based on round - early rounds focus more on retrieval quality
+        if signals.round_idx == 0:
+            weights["overlap"] *= 1.1
+            weights["faith"] *= 0.9
+
+        # Normalize weights
+        total = sum(weights.values())
+        return {k: v / total for k, v in weights.items()}
+
+    def _calculate_enhanced_uncertainty(
+        self, signals: GateSignals, weights: Dict[str, float]
+    ) -> float:
+        """Calculate enhanced uncertainty score with semantic analysis."""
+        # Core uncertainty components
+        uncertainty = (
+            weights["faith"] * (1 - signals.faith)
+            + weights["overlap"] * (1 - signals.overlap)
+            + weights["lexical"] * signals.lexical_uncertainty
+            + weights["completeness"] * (1 - signals.completeness)
+            + weights["semantic"] * (1 - signals.semantic_coherence)
+        )
+
+        return min(1.0, uncertainty)
+
+    def _apply_context_penalties(
+        self, uncertainty: float, signals: GateSignals
+    ) -> float:
+        """Apply context-aware penalties and bonuses."""
+        # Novelty penalty (enhanced)
+        if signals.round_idx > 0:
+            if signals.novelty_ratio < 0.1:  # Very low novelty
+                uncertainty += 0.15
+            elif signals.novelty_ratio < 0.2:  # Low novelty
+                uncertainty += 0.08
+
+        # Length-based adjustment
+        if signals.answer_length < 20:  # Very short answers
+            uncertainty += 0.1
+        elif (
+            signals.answer_length > 200
+        ):  # Very long answers might be verbose/uncertain
+            uncertainty += 0.05
+
+        # Budget pressure
+        budget_ratio = signals.budget_left_tokens / 3500  # Assuming max budget
+        if budget_ratio < 0.2:  # Low budget remaining
+            uncertainty *= 1.2  # Increase uncertainty to encourage stopping
+
+        return min(1.0, uncertainty)
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Return cache performance statistics."""
+        total_requests = self._cache_hits + self._cache_misses
+        return {
+            "cache_hits": self._cache_hits,
+            "cache_misses": self._cache_misses,
+            "hit_rate": self._cache_hits / max(1, total_requests),
+            "cache_size": len(self._cache),
+        }
 
 
 def make_gate(settings: Settings) -> UncertaintyGate:
-    """Create and return an UncertaintyGate instance."""
+    """Create and return an enhanced UncertaintyGate instance."""
     return UncertaintyGate(settings)

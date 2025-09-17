@@ -22,46 +22,227 @@ from agentic_rag.utils.encoder import NpEncoder
 from agentic_rag.utils.timing import timer
 
 
-def _assess_lexical_uncertainty(response: str) -> float:
-    """Assess lexical uncertainty based on confidence/uncertainty keywords."""
+def _assess_lexical_uncertainty(response: str, use_cache: bool = True) -> float:
+    """Enhanced lexical uncertainty assessment with caching and semantic analysis."""
+    if not response or len(response.strip()) < 3:
+        return 1.0
+
+    # Cache key for performance
+    cache_key = hash(response) if use_cache else None
+    if cache_key and hasattr(_assess_lexical_uncertainty, "_cache"):
+        if cache_key in _assess_lexical_uncertainty._cache:
+            return _assess_lexical_uncertainty._cache[cache_key]
+
     response_lower = response.lower()
-    uncertainty_keywords = [
-        "might",
-        "maybe",
-        "perhaps",
-        "possibly",
-        "likely",
-        "probably",
-        "seems",
-        "appears",
-        "suggests",
-        "indicates",
-        "unclear",
-        "uncertain",
-        "not sure",
-        "don't know",
-        "can't say",
-        "difficult to determine",
-    ]
-    uncertainty_count = sum(
-        response_lower.count(keyword) for keyword in uncertainty_keywords
-    )
-    # Simple heuristic: presence of keywords maps to uncertainty score
-    return min(1.0, uncertainty_count * 0.25)
+    words = response_lower.split()
+    total_words = len(words)
+
+    if total_words == 0:
+        return 1.0
+
+    # Enhanced uncertainty keywords with weights
+    uncertainty_indicators = {
+        # High uncertainty
+        "might": 0.8,
+        "maybe": 0.8,
+        "perhaps": 0.7,
+        "possibly": 0.7,
+        "unclear": 0.9,
+        "uncertain": 0.9,
+        "unsure": 0.8,
+        "don't know": 1.0,
+        "can't say": 0.9,
+        "not sure": 0.8,
+        # Medium uncertainty
+        "likely": 0.5,
+        "probably": 0.5,
+        "seems": 0.6,
+        "appears": 0.6,
+        "suggests": 0.4,
+        "indicates": 0.4,
+        "could be": 0.6,
+        # Hedging
+        "somewhat": 0.3,
+        "rather": 0.3,
+        "quite": 0.2,
+        "fairly": 0.3,
+    }
+
+    confidence_indicators = {
+        "definitely": -0.8,
+        "certainly": -0.7,
+        "clearly": -0.6,
+        "obviously": -0.6,
+        "undoubtedly": -0.8,
+        "absolutely": -0.9,
+        "precisely": -0.7,
+        "exactly": -0.7,
+        "specifically": -0.5,
+    }
+
+    uncertainty_score = 0.0
+
+    # Check for uncertainty phrases
+    for phrase, weight in uncertainty_indicators.items():
+        if phrase in response_lower:
+            uncertainty_score += weight
+
+    # Check for confidence phrases (reduce uncertainty)
+    for phrase, weight in confidence_indicators.items():
+        if phrase in response_lower:
+            uncertainty_score += weight  # weight is negative
+
+    # Normalize by response length (longer responses might have more indicators)
+    uncertainty_score = uncertainty_score / max(1, total_words / 20)
+
+    # Question marks might indicate uncertainty
+    question_marks = response.count("?")
+    if question_marks > 0:
+        uncertainty_score += min(0.3, question_marks * 0.1)
+
+    # Cache result
+    if cache_key:
+        if not hasattr(_assess_lexical_uncertainty, "_cache"):
+            _assess_lexical_uncertainty._cache = {}  # type: ignore
+        _assess_lexical_uncertainty._cache[cache_key] = min(  # type: ignore
+            1.0, max(0.0, uncertainty_score)
+        )
+
+    return min(1.0, max(0.0, uncertainty_score))
 
 
 def _assess_response_completeness(response: str) -> float:
-    """Assess response completeness, where 1.0 is complete."""
-    # Simple heuristic: very short responses might indicate uncertainty
-    if len(response.strip()) < 20:
-        return 0.2  # Low completeness
-    # Incomplete sentences or trailing indicators
-    if not response.strip().endswith((".", "?", "!", "]")):
+    """Enhanced response completeness assessment."""
+    if not response or len(response.strip()) < 3:
+        return 0.0
+
+    response = response.strip()
+    length = len(response)
+
+    # Length-based scoring (more nuanced)
+    if length < 10:
+        length_score = 0.1
+    elif length < 30:
+        length_score = 0.4
+    elif length < 100:
+        length_score = 0.8
+    else:
+        length_score = 1.0
+
+    # Sentence structure scoring
+    sentences = [s.strip() for s in response.split(".") if s.strip()]
+    if not sentences:
+        structure_score = 0.2
+    else:
+        # Check for complete sentences
+        complete_sentences = sum(1 for s in sentences if len(s) > 5 and " " in s)
+        structure_score = min(1.0, complete_sentences / max(1, len(sentences)))
+
+    # Punctuation completeness
+    punct_score = 1.0 if response.endswith((".", "!", "?", "]")) else 0.6
+
+    # Check for abrupt endings or incomplete thoughts
+    incomplete_indicators = ["...", "etc.", "and so on", "among others"]
+    if any(indicator in response.lower() for indicator in incomplete_indicators):
+        punct_score *= 0.8
+
+    # Combine scores
+    completeness = length_score * 0.4 + structure_score * 0.4 + punct_score * 0.2
+    return min(1.0, completeness)
+
+
+def _assess_semantic_coherence(response: str, question: str = "") -> float:
+    """Assess semantic coherence of the response."""
+    if not response or len(response.strip()) < 10:
+        return 0.0
+
+    # Simple coherence indicators
+    sentences = [s.strip() for s in response.split(".") if s.strip()]
+    if len(sentences) < 2:
+        return 0.8  # Single sentence, assume coherent
+
+    # Check for contradictory statements
+    contradictory_patterns = [
+        ("yes", "no"),
+        ("true", "false"),
+        ("correct", "incorrect"),
+        ("is", "is not"),
+        ("can", "cannot"),
+        ("will", "will not"),
+    ]
+
+    response_lower = response.lower()
+    contradiction_penalty = 0.0
+
+    for pos, neg in contradictory_patterns:
+        if pos in response_lower and neg in response_lower:
+            contradiction_penalty += 0.2
+
+    # Check for logical flow indicators
+    flow_indicators = [
+        "however",
+        "therefore",
+        "consequently",
+        "furthermore",
+        "moreover",
+        "additionally",
+        "in contrast",
+        "similarly",
+    ]
+
+    flow_bonus = min(
+        0.2, sum(0.05 for indicator in flow_indicators if indicator in response_lower)
+    )
+
+    # Base coherence score
+    base_score = 0.7
+    coherence = base_score + flow_bonus - contradiction_penalty
+
+    return min(1.0, max(0.0, coherence))
+
+
+def _assess_question_complexity(question: str) -> float:
+    """Assess question complexity to adapt gate behavior."""
+    if not question:
         return 0.5
-    return 1.0
+
+    question_lower = question.lower()
+    words = question_lower.split()
+
+    # Length-based complexity
+    length_complexity = min(1.0, len(words) / 30)
+
+    # Complex question indicators
+    complex_indicators = [
+        "compare",
+        "contrast",
+        "analyze",
+        "evaluate",
+        "synthesize",
+        "explain why",
+        "how does",
+        "what are the implications",
+        "multiple",
+        "various",
+        "different",
+        "relationship between",
+    ]
+
+    complexity_score = sum(
+        0.1 for indicator in complex_indicators if indicator in question_lower
+    )
+
+    # Question type complexity
+    if any(word in question_lower for word in ["why", "how", "explain"]):
+        complexity_score += 0.2
+    elif any(word in question_lower for word in ["what", "when", "where", "who"]):
+        complexity_score += 0.1
+
+    return min(1.0, length_complexity * 0.3 + complexity_score * 0.7)
 
 
 def is_global_question(q: str) -> bool:
+    """Determine if question requires global/comprehensive knowledge."""
     try:
         import spacy
 
@@ -532,20 +713,34 @@ class Agent(BaseAgent):
                 short_reason = "OVERLAP_STAGNANT"
                 action = "STOP_STAGNANT"
             else:
-                print("🚪 Consulting UncertaintyGate...")
-                lexical_uncertainty = _assess_lexical_uncertainty(draft)
+                print("🚪 Consulting Enhanced UncertaintyGate...")
+
+                # Enhanced uncertainty assessments with caching
+                lexical_uncertainty = _assess_lexical_uncertainty(draft, use_cache=True)
                 completeness = _assess_response_completeness(draft)
+                semantic_coherence = _assess_semantic_coherence(draft, question)
+                question_complexity = _assess_question_complexity(question)
+
                 gate_extras: Dict[str, Any] = {}
                 signals = GateSignals(
                     faith=f,
                     overlap=o,
                     lexical_uncertainty=lexical_uncertainty,
                     completeness=completeness,
+                    semantic_coherence=semantic_coherence,
+                    answer_length=len(draft),
+                    question_complexity=question_complexity,
                     budget_left_tokens=tokens_left,
                     round_idx=r - 1,
                     has_reflect_left=has_reflect_left,
                     novelty_ratio=new_hits_ratio,
                     extras=gate_extras,
+                )
+
+                print(
+                    f"📊 Enhanced metrics: lex_unc={lexical_uncertainty:.3f}, "
+                    f"completeness={completeness:.3f}, coherence={semantic_coherence:.3f}, "
+                    f"q_complexity={question_complexity:.3f}"
                 )
                 if self.gate_on:
                     action = self.gate.decide(signals)
@@ -555,8 +750,16 @@ class Agent(BaseAgent):
                     print("🚫 Gate OFF - continuing to next round")
                 if gate_extras.get("uncertainty_score"):
                     print(
-                        f"🌡️  Uncertainty score: {gate_extras['uncertainty_score']:.3f}"
+                        f"🌡️  Enhanced uncertainty score: {gate_extras['uncertainty_score']:.3f}"
                     )
+                    if gate_extras.get("adaptive_weights"):
+                        weights = gate_extras["adaptive_weights"]
+                        print(
+                            f"⚖️  Adaptive weights: faith={weights.get('faith', 0):.2f}, "
+                            f"overlap={weights.get('overlap', 0):.2f}, semantic={weights.get('semantic', 0):.2f}"
+                        )
+                    if gate_extras.get("cache_hit_rate"):
+                        print(f"💾 Cache hit rate: {gate_extras['cache_hit_rate']:.2f}")
 
             # Handle REFLECT action
             if should_reflect(action, has_reflect_left):
@@ -612,8 +815,11 @@ class Agent(BaseAgent):
                     "reflected_from": (
                         step_log.get("draft") if "step_log" in locals() else None
                     ),
-                    "used_gate": "uncertainty",
+                    "used_gate": "enhanced_uncertainty",
                     "uncertainty_score": gate_extras.get("uncertainty_score"),
+                    "semantic_coherence": semantic_coherence,
+                    "question_complexity": question_complexity,
+                    "adaptive_weights": gate_extras.get("adaptive_weights"),
                 }
                 self._log_jsonl(reflect_log, log_path)
 

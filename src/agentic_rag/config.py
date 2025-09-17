@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     OVERLAP_TAU: float = 0.40
     OVERLAP_SIM_TAU: float = 0.60
     UNCERTAINTY_TAU: float = 0.50
+    # Enhanced gate settings
+    ENABLE_GATE_CACHING: bool = True
+    SEMANTIC_COHERENCE_WEIGHT: float = 0.10
     # Judge policy gray-zone bounds and stagnation threshold
     TAU_LO: float = 0.40
     TAU_HI: float = 0.60
