@@ -4,15 +4,18 @@ This directory contains notes, design documents, and experiment logs for the Unc
 
 ## Directory Structure
 
--   `documentation_report.md`: The primary, cumulative report documenting the project's progress, major updates, and architectural changes. This is the canonical source of truth for the project's history.
+-   `documentation_report.md`: The primary, cumulative report documenting the project's progress, major updates, and architectural changes.
 
--   `/design`: Contains high-level design documents and conceptual notes. These files describe the architecture and "how it should work."
-    -   `agentic.md`: Notes on the agentic RAG framework and the evolution to a multi-agent system.
-    -   `gate.md`: Detailed notes on the Uncertainty Gate's implementation.
+-   `/design`: Contains documents describing the **current architecture** and implementation of core components.
+    -   `agentic.md`: Describes the current agentic RAG framework.
+    -   `gate.md`: Describes the current implementation of the Uncertainty Gate.
+
+-   `/improvements`: Contains actionable plans and roadmaps for **future enhancements**.
+    -   `agentic.md`: The plan for evolving the agentic framework.
+    -   `gate.md`: The plan for future enhancements to the Uncertainty Gate.
 
 -   `/experiments`: Contains logs, command sequences, and results from specific experimental runs.
     -   Files should be named using the convention: `YYYY-MM-DD_short-description.md`.
-    -   These notes should be self-contained and allow someone to reproduce a specific experiment.
 
--   `/reference`: Contains supplementary documentation and explanations of core concepts.
+-   `/explanations`: Contains supplementary documentation and explanations of core concepts.
     -   `metrics.md`: A detailed explanation of all evaluation metrics used in the project.
