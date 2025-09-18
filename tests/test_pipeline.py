@@ -60,10 +60,10 @@ def test_pipeline(mock_get_openai, test_data_dir, test_index_dir, monkeypatch):
 def test_loop_short_circuit_no_new_hits():
     from agentic_rag.agent.loop import Agent
 
-    with patch("agentic_rag.agent.loop.VectorRetriever") as mock_retriever, patch(
-        "agentic_rag.agent.loop.OpenAIAdapter"
-    ) as mock_llm:
-
+    with (
+        patch("agentic_rag.agent.loop.VectorRetriever") as mock_retriever,
+        patch("agentic_rag.agent.loop.OpenAIAdapter") as mock_llm,
+    ):
         # Setup mock retriever to return the same doc twice
         mock_retriever.return_value.retrieve_pack.side_effect = [
             (

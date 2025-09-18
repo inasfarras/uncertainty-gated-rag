@@ -47,8 +47,13 @@ class Settings(BaseSettings):
     USE_HYDE: bool = True
     MMR_LAMBDA: float = 0.4
     RETRIEVAL_POOL_K: int = 50
+    # Hybrid search combining vector and BM25
+    USE_HYBRID_SEARCH: bool = True
+    HYBRID_ALPHA: float = 0.7  # Weight for vector vs BM25 (0.7 = 70% vector, 30% BM25)
     # Judge policy for RAGAS invocation in agent loop: never | gray_zone | always
-    JUDGE_POLICY: Literal["never", "gray_zone", "always"] = "never"
+    JUDGE_POLICY: Literal["never", "gray_zone", "always"] = (
+        "always"  # Enable judge by default
+    )
     # Removed GATE_KIND - only UncertaintyGate is available
 
     LOG_DIR: str = "logs"

@@ -5,6 +5,7 @@ This utility ingests the per-question summary CSVs emitted by
 ``python -m agentic_rag.eval.runner`` and prints an aggregated view so you can
 contrast different runs quickly (e.g., gate on vs gate off).
 """
+
 from __future__ import annotations
 
 import argparse

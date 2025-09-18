@@ -7,6 +7,7 @@ import numpy as np
 import typer
 
 from agentic_rag.agent.gate import GateAction, GateSignals, make_gate
+from agentic_rag.agent.judge import create_judge, create_query_transformer
 from agentic_rag.config import settings
 from agentic_rag.eval.signals import (
     CIT_RE,
@@ -265,7 +266,7 @@ def build_prompt(
 
     system_content = build_system_instructions()
 
-    user_content = f"QUESTION:\n{question}\n\n" f"CONTEXT:\n{context_str}"
+    user_content = f"QUESTION:\n{question}\n\nCONTEXT:\n{context_str}"
 
     debug_prompt = f"SYSTEM:\n{system_content}\n\n{user_content}"
     return [
@@ -538,6 +539,8 @@ class Agent(BaseAgent):
         super().__init__(system="agent", debug_mode=debug_mode)
         self.gate_on = gate_on
         self.gate = make_gate(settings)
+        self.judge = create_judge(self.llm, settings)
+        self.query_transformer = create_query_transformer(self.llm)
 
     def answer(self, question: str, qid: str | None = None) -> Dict[str, Any]:
         qid = qid or str(uuid.uuid4())
@@ -589,8 +592,10 @@ class Agent(BaseAgent):
             )
             if stats.get("used_hyde"):
                 print("🔮 HyDE query rewriting applied")
+            if stats.get("used_hybrid"):
+                print("🔍 Hybrid search (Vector + BM25) applied")
             if stats.get("used_rerank"):
-                print("🏆 BGE reranking applied")
+                print("🏆 BGE cross-encoder reranking applied")
             if stats.get("used_mmr"):
                 print("🎯 MMR diversification applied")
 
@@ -675,17 +680,35 @@ class Agent(BaseAgent):
             o = float(sup.get("overlap", 0.0))
             print(f"📈 Overlap score: {o:.3f} (threshold: {settings.OVERLAP_TAU})")
 
+            # Enhanced Judge Assessment - Always invoke for first round
             used_judge = False
+            judge_assessment = None
             faith_ragas = None
             faith_fallback = min(1.0, 0.6 + 0.4 * o)
+
+            # Always use judge for first round or when policy demands it
             policy = settings.JUDGE_POLICY
-            if policy == "always":
-                faith_ragas = faithfulness_score(question, context_texts, draft)
+            should_use_judge = (
+                (r == 1)
+                or (policy == "always")
+                or (policy == "gray_zone" and settings.TAU_LO <= o < settings.TAU_HI)
+            )
+
+            if should_use_judge:
+                print("🧠 Invoking Judge for context sufficiency assessment...")
+                judge_assessment = self.judge.assess_context_sufficiency(
+                    question, contexts, round_idx=r - 1
+                )
                 used_judge = True
-            elif policy == "gray_zone":
-                if settings.TAU_LO <= o < settings.TAU_HI:
-                    faith_ragas = faithfulness_score(question, context_texts, draft)
-                    used_judge = True
+                print(
+                    f"🧠 Judge assessment: sufficient={judge_assessment.is_sufficient}, "
+                    f"confidence={judge_assessment.confidence:.3f}"
+                )
+                print(f"🧠 Judge reasoning: {judge_assessment.reasoning[:100]}...")
+
+                # Also compute faithfulness score for compatibility
+                faith_ragas = faithfulness_score(question, context_texts, draft)
+
             f = faith_ragas if faith_ragas is not None else faith_fallback
             print(
                 f"🎯 Faithfulness score: {f:.3f} (threshold: {settings.FAITHFULNESS_TAU})"
@@ -704,7 +727,7 @@ class Agent(BaseAgent):
             # Short-circuit: overlap stagnation
             elif r > 1 and (o - prev_overlap) < EPS_OVERLAP:
                 print(
-                    f"⏹️  SHORT CIRCUIT: Overlap stagnant ({o:.3f} - {prev_overlap:.3f} = {o-prev_overlap:.3f} < {EPS_OVERLAP})"
+                    f"⏹️  SHORT CIRCUIT: Overlap stagnant ({o:.3f} - {prev_overlap:.3f} = {o - prev_overlap:.3f} < {EPS_OVERLAP})"
                 )
                 short_reason = "OVERLAP_STAGNANT"
                 action = "STOP_STAGNANT"
@@ -718,6 +741,87 @@ class Agent(BaseAgent):
                 question_complexity = _assess_question_complexity(question)
 
                 gate_extras: Dict[str, Any] = {}
+
+                # Integrate Judge signals into gate if available
+                if judge_assessment:
+                    gate_extras["judge_sufficient"] = judge_assessment.is_sufficient
+                    gate_extras["judge_confidence"] = judge_assessment.confidence
+                    gate_extras["judge_action"] = judge_assessment.suggested_action
+
+                    # If judge says insufficient with high confidence, consider query transformation
+                    if (
+                        not judge_assessment.is_sufficient
+                        and judge_assessment.confidence > 0.7
+                        and judge_assessment.suggested_action == "TRANSFORM_QUERY"
+                        and r == 1
+                    ):  # Only on first round to avoid loops
+                        print(
+                            "🔄 Judge suggests query transformation - attempting remedial retrieval..."
+                        )
+
+                        # Get query transformations
+                        transformations = self.query_transformer.transform_query(
+                            question, judge_assessment, contexts
+                        )
+
+                        if transformations:
+                            print(
+                                f"🔄 Trying {len(transformations)} query transformations..."
+                            )
+                            for i, transformed_query in enumerate(
+                                transformations[:2]
+                            ):  # Try up to 2
+                                print(
+                                    f"🔄 Transformation {i + 1}: {transformed_query[:80]}..."
+                                )
+
+                                # Retrieve with transformed query
+                                transform_contexts, transform_stats = (
+                                    self.retriever.retrieve_pack(
+                                        transformed_query,
+                                        k=k,
+                                        exclude_doc_ids=seen_doc_ids,
+                                        probe_factor=settings.PROBE_FACTOR,
+                                        round_idx=r,
+                                        llm_client=self.llm,
+                                    )
+                                )
+
+                                # Check if we got new/better contexts
+                                transform_ids = cast(
+                                    list[str], transform_stats.get("retrieved_ids", [])
+                                )
+                                new_transform_hits = [
+                                    d for d in transform_ids if d not in seen_doc_ids
+                                ]
+
+                                if new_transform_hits:
+                                    print(
+                                        f"🔄 Transformation {i + 1} found {len(new_transform_hits)} new contexts"
+                                    )
+                                    # Merge new contexts with existing ones
+                                    contexts.extend(
+                                        transform_contexts[:3]
+                                    )  # Add top 3 new contexts
+                                    seen_doc_ids.update(new_transform_hits)
+
+                                    # Re-assess with enhanced contexts
+                                    enhanced_judge = (
+                                        self.judge.assess_context_sufficiency(
+                                            question, contexts, round_idx=r - 1
+                                        )
+                                    )
+                                    if enhanced_judge.is_sufficient:
+                                        print(
+                                            "🔄 Query transformation successful - contexts now sufficient!"
+                                        )
+                                        judge_assessment = enhanced_judge
+                                        gate_extras["used_query_transformation"] = True
+                                        gate_extras["successful_transformation"] = (
+                                            transformed_query
+                                        )
+                                        break
+
                 signals = GateSignals(
                     faith=f,
                     overlap=o,
@@ -888,7 +992,7 @@ class Agent(BaseAgent):
 
             if action == GateAction.RETRIEVE_MORE:
                 k = min(32, k + 4)
-                print(f"🔄 CONTINUING to round {r+1} with k={k}")
+                print(f"🔄 CONTINUING to round {r + 1} with k={k}")
             prev_overlap = o
             prev_top_ids = curr_top_ids
 

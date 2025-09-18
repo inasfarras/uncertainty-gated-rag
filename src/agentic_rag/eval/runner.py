@@ -129,7 +129,7 @@ def run(
         raise typer.Exit(1)
 
     console.print(
-        f"[bold green]Running evaluation for system: '{system}' with gate {'ON' if gate_on and system=='agent' else 'OFF'}[/bold green]"
+        f"[bold green]Running evaluation for system: '{system}' with gate {'ON' if gate_on and system == 'agent' else 'OFF'}[/bold green]"
     )
 
     # Run evaluation
@@ -140,6 +140,21 @@ def run(
         if debug_prompts and idx >= 3:
             model.debug_mode = False
         summary = model.answer(question=item["question"], qid=item["id"])
+
+        console.print(
+            f"  [bold blue]Agent Answer:[/bold blue] {summary.get('final_answer', '')}"
+        )
+
+        gold = item.get("gold", "")
+        is_unans = gold.strip().lower() in {"invalid question", "n/a", "unknown", ""}
+
+        normalized_answer = summary.get("final_answer", "").strip().lower()
+        from agentic_rag.eval.signals import extract_citations
+
+        has_any_citation = len(extract_citations(summary.get("final_answer", ""))) > 0
+        said_idk = normalized_answer == "i don't know." and not has_any_citation
+        abstain_correct = 1 if (is_unans and said_idk) else 0
+        hallucinated_unans = 1 if (is_unans and not said_idk) else 0
 
         # Build ctx_map from exact contexts used
         ctx_list = summary.get("contexts", []) or []
@@ -168,6 +183,9 @@ def run(
         summary["f1"] = ef["f1"]
         summary["abstain"] = abstain
         summary["idk_with_citation_count"] = sup.get("idk_with_citation_count", 0)
+        summary["is_unans"] = is_unans
+        summary["abstain_correct"] = abstain_correct
+        summary["hallucinated_unans"] = hallucinated_unans
 
         # Dump debug prompt and raw output for first 3 when requested
         if debug_prompts and idx < 3:
@@ -214,6 +232,15 @@ def run(
     df = pd.DataFrame(results)
     df["system"] = system
     df["id"] = [q["id"] for q in questions]
+
+    # Overall Accuracy and Score (calculated after all other metrics)
+    df["overall_accuracy"] = df.apply(
+        lambda row: (
+            row["abstain_correct"] if row["is_unans"] else row["em"]
+        ),  # Assuming EM for answerable questions, or a judge score if implemented
+        axis=1,
+    )
+    df["score"] = df["overall_accuracy"] - df["hallucinated_unans"]
 
     # Rename for clarity in CSV
     df = df.rename(columns={"p50_latency_ms": "latency_ms"})
@@ -275,6 +302,11 @@ def run(
         "context_tokens",
         "retrieved_ids",
         "action",
+        "is_unans",
+        "abstain_correct",
+        "hallucinated_unans",
+        "overall_accuracy",
+        "score",
     ]
 
     # Only include ragas if it was computed
@@ -291,23 +323,31 @@ def run(
 
     summary_metrics = {"Count": str(len(df))}
 
+    answerable_df = df[~df["is_unans"]]
+
     # Faithfulness reporting options
     if faith_report in {"fallback", "both"}:
-        summary_metrics["Avg Faithfulness (fallback)"] = f"{df['final_f'].mean():.3f}"
+        summary_metrics["Avg Faithfulness (fallback)"] = (
+            f"{answerable_df['final_f'].mean():.3f}"
+        )
     if faith_report in {"ragas", "both"} and "final_f_ragas" in df.columns:
         mean_r = (
-            df["final_f_ragas"].dropna().mean()
-            if len(df["final_f_ragas"].dropna()) > 0
+            answerable_df["final_f_ragas"].dropna().mean()
+            if len(answerable_df["final_f_ragas"].dropna()) > 0
             else 0.0
         )
         summary_metrics["Avg Faithfulness (RAGAS)"] = f"{mean_r:.3f}"
 
     summary_metrics.update(
         {
-            "Avg Overlap": f"{df['final_o'].mean():.3f}",
+            "Avg Overlap": f"{answerable_df['final_o'].mean():.3f}",
             "Avg EM": f"{df['em'].mean():.3f}",
             "Avg F1": f"{df['f1'].mean():.3f}",
             "Abstain Rate": f"{df['abstain'].mean():.3f}",
+            "Abstain Accuracy": f"{df['abstain_correct'].mean():.3f}",
+            "Overall Accuracy": f"{df['overall_accuracy'].mean():.3f}",
+            "Hallucination Rate": f"{df['hallucinated_unans'].mean():.3f}",
+            "Score": f"{df['score'].mean():.3f}",
             "Avg Total Tokens": f"{df['total_tokens'].mean():.0f}",
             "P50 Latency (ms)": f"{df['latency_ms'].median():.0f}",
             "IDK+Cit Count": str(int(df["idk_with_citation_count"].sum())),

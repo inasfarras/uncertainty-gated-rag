@@ -157,7 +157,7 @@ class UncertaintyGate(BaseGate):
     def _calculate_enhanced_uncertainty(
         self, signals: GateSignals, weights: Dict[str, float]
     ) -> float:
-        """Calculate enhanced uncertainty score with semantic analysis."""
+        """Calculate enhanced uncertainty score with semantic analysis and Judge signals."""
         # Core uncertainty components
         uncertainty = (
             weights["faith"] * (1 - signals.faith)
@@ -166,6 +166,22 @@ class UncertaintyGate(BaseGate):
             + weights["completeness"] * (1 - signals.completeness)
             + weights["semantic"] * (1 - signals.semantic_coherence)
         )
+
+        # Integrate Judge signals if available
+        if signals.extras:
+            judge_sufficient = signals.extras.get("judge_sufficient")
+            judge_confidence = signals.extras.get("judge_confidence", 0.5)
+
+            if judge_sufficient is not None:
+                # Judge signal: if insufficient with high confidence, increase uncertainty
+                if not judge_sufficient and judge_confidence > 0.7:
+                    uncertainty += (
+                        0.2 * judge_confidence
+                    )  # Strong signal for more retrieval
+                elif judge_sufficient and judge_confidence > 0.8:
+                    uncertainty *= 0.7  # Strong signal for stopping
+                elif judge_sufficient and judge_confidence > 0.6:
+                    uncertainty *= 0.85  # Moderate signal for stopping
 
         return min(1.0, uncertainty)
 

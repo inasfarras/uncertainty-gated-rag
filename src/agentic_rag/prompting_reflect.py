@@ -1,75 +1,41 @@
 """Reflection prompting for correcting and improving answers."""
 
-from typing import Any, Dict, List, Tuple
-
 from agentic_rag.models.adapter import ChatMessage
-
-REFLECT_SYSTEM = """You are a careful editor. You must ensure every sentence is supported by the provided CTX blocks.
-
-Rules:
-- If a sentence is unsupported by CTX, revise it or delete it.
-- If key information is missing in CTX, answer with exactly: "I don't know." (NO citation).
-- Every claim sentence MUST end with a citation [CIT:<doc_id>] matching a CTX header (alphanumeric, '_' or '-').
-- "I don't know." MUST have NO citation.
-- Do not invent facts. Be concise (<= 4 sentences)."""
-
-
-REFLECT_USER_TEMPLATE = """CTX:
-{rendered_ctx}
-
-CURRENT ANSWER:
-{answer}
-
-TASK:
-1) Check each sentence against CTX.
-2) Fix or remove unsupported claims.
-3) If not enough evidence remains, output only: I don't know.
-
-Return the final answer now:"""
 
 
 def build_reflect_prompt(
-    contexts: List[Dict[str, Any]], current_answer: str
-) -> Tuple[List[ChatMessage], str]:
-    """
-    Build reflection prompt to correct and improve the current answer.
+    contexts: list[dict], original_answer: str
+) -> tuple[list[ChatMessage], str]:
+    """Builds a REFLECT prompt to repair a poor answer."""
+    context_str = "\n\n".join([f"CTX[{c['id']}]:\n{c['text']}" for c in contexts])
 
-    Args:
-        contexts: List of context chunks with 'id' and 'text' fields
-        current_answer: Current answer to be reflected upon
-
-    Returns:
-        Tuple of (messages, debug_prompt)
-    """
-    # Render context blocks
-    context_blocks = []
-    for c in contexts:
-        context_blocks.append(f"CTX[{c['id']}]:\n{c['text']}")
-    rendered_ctx = "\n\n".join(context_blocks)
-
-    user_content = REFLECT_USER_TEMPLATE.format(
-        rendered_ctx=rendered_ctx, answer=current_answer
+    # Improved REFLECT prompt
+    system_content = (
+        "You are a meticulous editor. Your task is to critically review an answer and the provided context. "
+        "Your goal is to produce a corrected answer that is fully supported by the context. "
+        "Follow these instructions exactly:\n"
+        "1.  For each sentence in the ORIGINAL ANSWER, verify if it is directly supported by the CONTEXT. A sentence is supported if you can find clear evidence for it in the CONTEXT.\n"
+        "2.  If a sentence is fully supported, keep it and its citation.\n"
+        "3.  If a sentence is partially supported, rewrite it to be fully supported by the CONTEXT.\n"
+        "4.  If a sentence is not supported at all, REMOVE it.\n"
+        "5.  If, after removing all unsupported sentences, the answer is empty or does not address the question, output EXACTLY: I don't know.\n"
+        "6.  Do NOT add any new information that is not in the CONTEXT.\n"
+        "7.  Preserve the original citation format [CIT:<doc_id>] for all supported claims."
     )
 
-    messages = [
-        ChatMessage(role="system", content=REFLECT_SYSTEM),
+    user_content = (
+        f"CONTEXT:\n{context_str}\n\n"
+        f"ORIGINAL ANSWER:\n{original_answer}\n\n"
+        f"CORRECTED ANSWER:"
+    )
+
+    debug_prompt = f"SYSTEM:\n{system_content}\n\n{user_content}"
+    return [
+        ChatMessage(role="system", content=system_content),
         ChatMessage(role="user", content=user_content),
-    ]
-
-    debug_prompt = f"SYSTEM:\n{REFLECT_SYSTEM}\n\nUSER:\n{user_content}"
-
-    return messages, debug_prompt
+    ], debug_prompt
 
 
 def should_reflect(action: str, has_reflect_left: bool) -> bool:
-    """
-    Determine if reflection should be performed based on gate action.
-
-    Args:
-        action: Action returned by the gate
-        has_reflect_left: Whether reflection is still available
-
-    Returns:
-        True if reflection should be performed
-    """
+    """Determines if the REFLECT action should be taken."""
     return action == "REFLECT" and has_reflect_left

@@ -16,4 +16,3 @@ def test_supported_sentence_with_valid_citation_counts():
     assert sup["overlap"] == 1.0
     ef = em_f1(ans, gold="Tenet is a film directed by Christopher Nolan.")
     assert 0.0 <= ef["f1"] <= 1.0
-

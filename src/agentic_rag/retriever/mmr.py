@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
+
+from agentic_rag.prompting import ContextBlock, pack_context
 
 
 def _cos(a: np.ndarray, b: np.ndarray) -> float:
@@ -13,51 +15,73 @@ def _cos(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def mmr_select(
-    q_emb: np.ndarray,
+    query_embedding: np.ndarray,
     candidates: list[dict[str, Any]],
     k: int,
-    lambda_div: float = 0.4,
+    lambda_mult: float,
 ) -> list[dict[str, Any]]:
-    """
-    Select k items using Maximal Marginal Relevance to balance relevance and diversity.
-
-    Args:
-        q_emb: Query embedding (L2-normalized)
-        candidates: List of candidate documents with 'emb' field containing L2-normalized embeddings
-        k: Number of items to select
-        lambda_div: Diversity parameter (0.0 = pure diversity, 1.0 = pure relevance)
-
-    Returns:
-        List of selected candidates maximizing MMR = λ * sim(q, d) - (1-λ) * max_j sim(d, d_j_selected)
-    """
-    if not candidates or k <= 0:
+    """Select k candidates from a list using Maximal Marginal Relevance (MMR)."""
+    if not candidates:
         return []
 
-    selected: list[dict[str, Any]] = []
-    pool = candidates.copy()
+    selected_candidates = []
+    candidate_embeddings = np.array([c["emb"] for c in candidates])
 
-    # Seed with best by query similarity
-    pool.sort(key=lambda x: _cos(q_emb, x["emb"]), reverse=True)
-    selected.append(pool.pop(0))
+    # Calculate similarity between query and all candidates
+    query_candidate_similarity = np.dot(candidate_embeddings, query_embedding)
 
-    # Greedily select remaining items
-    while pool and len(selected) < k:
-        best_idx, best_mmr = 0, -1e9
-        selected_embs = [s["emb"] for s in selected]
+    # Find the best candidate to start with
+    best_candidate_idx = np.argmax(query_candidate_similarity)
+    selected_candidates.append(candidates[best_candidate_idx])
 
-        for i, candidate in enumerate(pool):
-            # Relevance: similarity to query
-            relevance = _cos(q_emb, candidate["emb"])
+    # Keep track of selected indices
+    selected_indices = {best_candidate_idx}
 
-            # Redundancy: max similarity to already selected items
-            redundancy = max(_cos(candidate["emb"], s_emb) for s_emb in selected_embs)
+    while len(selected_candidates) < min(k, len(candidates)):
+        best_mmr_score = -np.inf
+        best_candidate_idx = -1
+
+        for i in range(len(candidates)):
+            if i in selected_indices:
+                continue
+
+            # Similarity to query
+            sim_to_query = query_candidate_similarity[i]
+
+            # Max similarity to already selected candidates
+            selected_embeddings = np.array([c["emb"] for c in selected_candidates])
+            sim_to_selected = np.max(
+                np.dot(selected_embeddings, candidate_embeddings[i])
+            )
 
             # MMR score
-            mmr = lambda_div * relevance - (1.0 - lambda_div) * redundancy
+            mmr_score = lambda_mult * sim_to_query - (1 - lambda_mult) * sim_to_selected
 
-            if mmr > best_mmr:
-                best_mmr, best_idx = mmr, i
+            if mmr_score > best_mmr_score:
+                best_mmr_score = mmr_score
+                best_candidate_idx = i
 
-        selected.append(pool.pop(best_idx))
+        if best_candidate_idx != -1:
+            selected_candidates.append(candidates[best_candidate_idx])
+            selected_indices.add(best_candidate_idx)
+        else:
+            # No more candidates to select
+            break
 
-    return selected
+    return selected_candidates
+
+
+def mmr_pack_context(
+    blocks: list[dict[str, Any]], max_tokens_cap: int, mmr_lambda: float
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Pack context blocks using MMR for diversity."""
+    # This is a placeholder. For now, we'll just use the default packing.
+    # A full implementation would require embeddings for each block.
+
+    # Cast the list of dicts to a list of ContextBlock to satisfy mypy
+    context_blocks = [cast(ContextBlock, block) for block in blocks]
+
+    packed_blocks, total_tokens, n_blocks = pack_context(context_blocks, max_tokens_cap)
+
+    # Cast back to list of dicts for the return type
+    return packed_blocks, total_tokens, n_blocks

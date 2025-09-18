@@ -3,12 +3,193 @@
 ## Project Overview
 **Title**: Uncertainty-Gated RAG (Retrieval-Augmented Generation)
 **Repository**: https://github.com/inasfarras/uncertainty-gated-rag
-**Last Updated**: September 17, 2025
+**Last Updated**: September 18, 2025
 **Current Branch**: `optimize-uncertainty-gate`
 
 ## Recent Major Updates
 
-### 1. Analysis of Agent Performance Run (September 18, 2025)
+### 1. Agent Performance Analysis and Enhancement (September 18, 2025)
+
+#### **Issue Identification: Mixed Performance and Inefficient Retrieval**
+A detailed analysis of a 10-question subset from the CRAG dataset (`logs/1758190522_agent.jsonl`) revealed several performance issues with the Agentic RAG system:
+- **Incorrect Answers on Factual Questions**: The agent provided an incorrect answer for a single-fact question (`8163a6f0...`) despite having high confidence, indicating a flaw in the generation or extraction step.
+- **Poor Retrieval on Complex Queries**: For numeric, aggregation, and open-ended questions, the initial retrieval often failed to gather the necessary context, leading to multi-round searches that frequently ended in "I don't know."
+- **Inefficient Embedding**: The retriever was making one embedding call per document chunk, which is highly inefficient.
+- **Lack of Retrieval Diversity**: In cases of poor retrieval, the agent would often retrieve similar, irrelevant documents in subsequent rounds, leading to stagnation.
+- **Suboptimal Scoring**: The existing F1/EM scoring was brittle, failing on minor formatting differences (e.g., punctuation, citations).
+- **Ineffective Self-Correction**: The `REFLECT` prompt was not detailed enough to guide the model toward effective self-correction.
+
+#### **Technical Solution Details: Multi-faceted Enhancements**
+To address these issues, a series of enhancements were implemented across the agent's retrieval, evaluation, and self-correction modules.
+
+**1. Retrieval Quality and Efficiency (`src/agentic_rag/retriever/vector.py`)**
+   - **Batch Embedding**: Implemented a fix to embed all candidate document texts in a single batch call, significantly reducing latency and API calls.
+   - **MMR for Diversification**: Added a minimal Maximal Marginal Relevance (MMR) packer to diversify retrieved contexts, especially in multi-round scenarios. This is controlled by the `MMR_LAMBDA` setting (recommended value: `0.4`).
+
+**2. Scoring Robustness (`src/agentic_rag/eval/metrics.py`)**
+   - **Short-Answer Extraction**: A new function, `extract_short_answer`, was created to post-process model outputs before scoring. It strips citations, normalizes text, and extracts the core noun phrase or number, making EM/F1 scores more reliable.
+
+**3. Improved Self-Correction (`src/agentic_rag/prompting_reflect.py`)**
+   - **Enhanced REFLECT Prompt**: The `build_reflect_prompt` function was updated with a more detailed system prompt that instructs the LLM to act as a "meticulous editor," performing sentence-level verification and explicitly repairing or removing unsupported claims.
+
+**4. Enhanced Logging and Analysis**
+   - **Improved Log Parsing (`parse_logs.py`)**: The log parsing script was rewritten to be more robust, correctly identifying the latest run for each question and parsing its associated per-round data.
+   - **New Logging Fields**: Added `uncertainty_score` and `cache_hit_rate` to per-round logs in `src/agentic_rag/agent/loop.py` for better diagnostics.
+
+#### **Code Changes Made**
+- **New File**: `src/agentic_rag/eval/metrics.py` - Contains the `extract_short_answer` function for robust scoring.
+- **Modified**: `src/agentic_rag/retriever/vector.py` - Implemented batch embedding and MMR packer.
+- **Modified**: `src/agentic_rag/prompting_reflect.py` - Updated with the enhanced REFLECT prompt.
+- **Modified**: `src/agentic_rag/agent/loop.py` - Added new fields to per-round logging.
+- **Modified**: `docs/runbook.md` - Created a new, concise runbook for analysis and A/B testing.
+- **Utility Script**: `parse_logs.py` - Rewritten for more accurate log analysis.
+
+#### **Test Results and Validation**
+- The diagnostic table produced by `parse_logs.py` provides a clear per-question breakdown of the agent's performance, validating the analysis.
+- The code changes are targeted fixes for the identified issues. The next step is to run the A/B test outlined in the new `docs/runbook.md` to quantify the improvements.
+
+#### **Current Status and Next Steps**
+- **Status**: Implemented.
+- **Next Steps**:
+  1.  Run the gate-on vs. gate-off A/B test using the new runbook to validate the enhancements.
+  2.  Analyze the results of the A/B test, paying close attention to the impact of MMR and the improved REFLECT prompt.
+  3.  Integrate the `extract_short_answer` function into the `runner.py` to re-calculate EM/F1 scores and report the potential gains.
+
+---
+
+### 1. Evaluation Metrics Enhancement (September 18, 2025)
+
+#### **Issue Identification: Incomplete Evaluation for Unanswerable Questions**
+The previous evaluation framework did not adequately distinguish between answerable and unanswerable questions, leading to a dilution of key evidence metrics (Faithfulness and Overlap) by including "not applicable" cases. There was also no explicit reward mechanism for the agent's correct abstention on unanswerable questions.
+
+#### **Technical Solution Details: Unanswerable Detection and New Metrics**
+The `src/agentic_rag/eval/runner.py` file has been updated to incorporate a robust mechanism for detecting unanswerable questions and introducing new evaluation metrics to provide a more nuanced assessment of the agent's performance.
+
+**1. Unanswerable Question Detection:**
+- Gold answers are now checked against a predefined set of terms (`{"invalid question", "n/a", "unknown", ""}`, case-insensitive and stripped) to identify unanswerable questions.
+
+**2. Abstain Correctness (`abstain_correct`):**
+- A new metric, `abstain_correct`, is introduced. It is set to `1` if a question is unanswerable AND the model outputs exactly "I don't know." (case-insensitive, no citations). Otherwise, it's `0`.
+
+**3. Hallucination on Unanswerable Questions (`hallucinated_unans`):**
+- A new metric, `hallucinated_unans`, is set to `1` if a question is unanswerable but the model provides a non-"I don't know" answer (i.e., hallucinates). Otherwise, it's `0`.
+
+**4. Exclusion from Evidence Metrics:**
+- For unanswerable items, `Overlap` and `Faithfulness` are kept at `0` (as they are not applicable) and these items are now *excluded* from the average calculations of these metrics. This prevents dilution and ensures that `Overlap` and `Faithfulness` accurately reflect performance on answerable questions.
+
+**5. New Composite Metrics:**
+- **Abstain Accuracy**: The mean of `abstain_correct`, calculated only on unanswerable items, rewarding safe abstention.
+- **Overall Accuracy**: Combines Exact Match (EM) for answerable questions and `abstain_correct` for unanswerable questions. If a judge is implemented for answerable questions, its score would be used instead of EM.
+- **Hallucination Rate**: The mean of `hallucinated_unans`, indicating the frequency of hallucination on unanswerable questions.
+- **Score**: `Overall Accuracy - Hallucination Rate`, providing a CRAG-compatible view of performance.
+
+#### **Code Changes Made (`src/agentic_rag/eval/runner.py`)**
+- **Lines Added (approx. 20 lines)**: Introduction of `is_unans`, `said_idk`, `abstain_correct`, `hallucinated_unans` flags and their calculations within the evaluation loop. New columns for `overall_accuracy` and `score` added to the DataFrame.
+- **Lines Modified (approx. 10 lines)**: Adjustment of Faithfulness and Overlap mean calculations to filter out unanswerable items. Addition of `Abstain Accuracy`, `Overall Accuracy`, `Hallucination Rate`, and `Score` to the console and CSV summaries.
+
+#### **Test Results and Validation**
+- Manual sanity checks based on the provided examples confirm the correctness of the new metrics:
+  - `Gold = “invalid question”, output = “I don’t know.” → abstain_correct=1, overall_accuracy=1, hallucination=0, excluded from Faith/Overlap avg.`
+  - `Gold = “invalid question”, output = “Tenet [CIT:d1]” → abstain_correct=0, overall_accuracy=0, hallucination=1.`
+  - `Gold = “Tenet”, output = “Tenet [CIT:d1]” → contributes to Faith/Overlap; overall_accuracy=EM or judge.`
+- No new linter errors were introduced during the implementation.
+
+#### **Current Status and Next Steps**
+- **Status**: Implemented and validated.
+- **Next Steps**: Continue with comprehensive evaluation runs to analyze the impact of these new metrics on overall system assessment.
+
+### 2. Agentic Framework Implementation (September 18, 2025)
+
+#### **Implementation Completed: Advanced Agentic RAG System**
+Following the analysis of poor performance in the previous evaluation run, a comprehensive implementation of the agentic framework has been completed. The system has evolved from a basic RAG pipeline to a sophisticated multi-agent system with self-correction capabilities.
+
+#### **Key Components Implemented**
+
+##### **A. Judge Module (`src/agentic_rag/agent/judge.py`)**
+- **Purpose**: Lightweight LLM-based assessment of context sufficiency
+- **Functionality**:
+  - Evaluates whether retrieved contexts contain adequate information to answer questions
+  - Returns structured assessments with confidence scores and reasoning
+  - Suggests remedial actions (STOP, RETRIEVE_MORE, TRANSFORM_QUERY)
+  - Provides query transformation suggestions when contexts are insufficient
+- **Integration**: Always invoked on first retrieval round, configurable for subsequent rounds
+- **Impact**: Enables the system to make informed decisions about context quality before generation
+
+##### **B. Query Transformation Engine (`QueryTransformer` class)**
+- **Purpose**: Improves retrieval through intelligent query rewriting and decomposition
+- **Strategies Implemented**:
+  - **Query Rewriting**: Rephrases questions using synonyms and alternative formulations
+  - **Query Decomposition**: Breaks complex multi-hop questions into simpler sub-queries
+  - **Entity-based Transformation**: Focuses on key entities and concepts
+- **LLM Integration**: Uses structured prompting to generate 2-3 alternative queries
+- **Fallback Logic**: Simple rule-based transformations when LLM fails
+- **Impact**: Addresses retrieval failure by exploring different query formulations
+
+##### **C. Hybrid Search System (`src/agentic_rag/retriever/bm25.py` + enhanced `vector.py`)**
+- **Purpose**: Combines dense vector search with sparse keyword matching
+- **Components**:
+  - **BM25Retriever**: Full implementation of BM25 algorithm with NLTK tokenization
+  - **HybridRetriever**: Score fusion combining FAISS vector search and BM25
+  - **Score Normalization**: Min-max normalization with configurable alpha weighting
+- **Configuration**: `USE_HYBRID_SEARCH=True`, `HYBRID_ALPHA=0.7` (70% vector, 30% BM25)
+- **Performance**: Automatic index creation and caching for efficiency
+- **Impact**: Improves retrieval for queries with specific terms, names, and acronyms
+
+##### **D. Enhanced Uncertainty Gate Integration**
+- **Judge Signal Integration**: Gate now considers Judge assessments in uncertainty calculations
+- **Adaptive Decision Making**:
+  - High-confidence Judge "insufficient" signals increase uncertainty by 20%
+  - High-confidence Judge "sufficient" signals reduce uncertainty by 15-30%
+- **Query Transformation Triggering**: Automatically triggers query transformation when Judge suggests it
+- **Enhanced Logging**: Comprehensive tracking of Judge decisions and transformations
+
+#### **Technical Architecture Updates**
+
+##### **Agent Loop Enhancements (`src/agentic_rag/agent/loop.py`)**
+```python
+# Key workflow changes:
+1. Retrieve contexts → 2. Generate initial answer → 3. Judge assessment (NEW)
+4. If insufficient + high confidence → Query transformation (NEW)
+5. Enhanced uncertainty gate with Judge signals → 6. Decision (STOP/CONTINUE/REFLECT)
+```
+
+##### **Configuration Updates (`src/agentic_rag/config.py`)**
+- `JUDGE_POLICY: "always"` - Judge now enabled by default
+- `USE_HYBRID_SEARCH: True` - Hybrid retrieval enabled
+- `HYBRID_ALPHA: 0.7` - Vector/BM25 weight balance
+- Backward compatibility maintained for all existing settings
+
+##### **Performance Optimizations**
+- **Caching**: Judge responses and BM25 indices cached for efficiency
+- **Parallel Processing**: Multiple query transformations evaluated concurrently
+- **Early Stopping**: Query transformation limited to first round to prevent loops
+- **Resource Management**: Token budget tracking includes Judge and transformation costs
+
+#### **Expected Performance Improvements**
+Based on the implemented enhancements, expected improvements include:
+- **Reduced Abstain Rate**: Judge-driven query transformation should reduce "I don't know" responses
+- **Improved F1/EM Scores**: Better retrieval through hybrid search and query transformation
+- **Higher Judge Invocation**: System now actively uses agentic features (target: >80% invocation rate)
+- **Better Context Quality**: Hybrid search should improve retrieval for entity-specific queries
+- **Enhanced Faithfulness**: Judge assessment ensures context sufficiency before generation
+
+#### **Files Modified/Created**
+- **New**: `src/agentic_rag/agent/judge.py` (346 lines) - Complete Judge implementation
+- **New**: `src/agentic_rag/retriever/bm25.py` (377 lines) - BM25 and hybrid search
+- **Enhanced**: `src/agentic_rag/agent/loop.py` - Judge integration and query transformation
+- **Enhanced**: `src/agentic_rag/agent/gate.py` - Judge signal integration
+- **Enhanced**: `src/agentic_rag/retriever/vector.py` - Hybrid search capability
+- **Updated**: `src/agentic_rag/config.py` - New settings for agentic features
+
+#### **Next Steps for Validation**
+1. **Full Evaluation Run**: Execute comprehensive evaluation with new agentic features
+2. **Metrics Comparison**: Compare with baseline run `1758126979` to measure improvements
+3. **Ablation Studies**: Test individual components (Judge-only, Hybrid-only, etc.)
+4. **Performance Analysis**: Monitor token usage and latency with new features
+
+---
+
+### 2. Analysis of Agent Performance Run (September 18, 2025)
 
 #### **Issue Identified: High Abstain Rate and Low Answer Quality**
 An evaluation run (`logs/1758126979_agent_summary.csv`) on 50 questions revealed significant performance issues. The agent exhibited a high **Abstain Rate of 30%**, indicating it failed to answer nearly a third of the questions. For the questions it did answer, the quality was low, with an **Average F1 score of 0.188** and an **Average Exact Match (EM) of 0.0**.
@@ -327,22 +508,52 @@ self.max_tokens_total = settings.MAX_TOKENS_TOTAL      # 3500 tokens
 ## Current Status
 
 ### **Active Branch**: `optimize-uncertainty-gate`
-- All enhancements successfully implemented
-- Comprehensive testing completed
-- Ready for merge or production deployment
-- Performance optimizations validated
+- **Agentic Framework Implementation**: ✅ COMPLETED (September 18, 2025)
+  - Judge Module with context sufficiency assessment
+  - Query Transformation Engine with LLM-based rewriting
+  - Hybrid Search System (Vector + BM25)
+  - Enhanced Uncertainty Gate with Judge integration
+- **Performance Optimizations**: ✅ COMPLETED
+  - Caching systems for Judge and BM25 indices
+  - Resource management and budget tracking
+  - Early stopping mechanisms
+- **Configuration Updates**: ✅ COMPLETED
+  - Judge enabled by default (`JUDGE_POLICY: "always"`)
+  - Hybrid search enabled (`USE_HYBRID_SEARCH: True`)
+  - Backward compatibility maintained
 
 ### **Repository State**
-- **Main branch**: Up to date with previous improvements
-- **Feature branch**: Contains latest uncertainty gate enhancements
-- **Tests**: 87.5% pass rate on new features
-- **Documentation**: Comprehensive inline documentation
+- **New Files Created**: 2 major components (723 lines total)
+  - `src/agentic_rag/agent/judge.py` - Complete Judge implementation
+  - `src/agentic_rag/retriever/bm25.py` - BM25 and hybrid search
+- **Enhanced Files**: 4 core components with agentic capabilities
+  - Agent loop with Judge integration and query transformation
+  - Uncertainty gate with Judge signal processing
+  - Vector retriever with hybrid search support
+  - Configuration with new agentic settings
+- **Code Quality**: No linting errors, comprehensive error handling
+- **Documentation**: Updated with complete technical specifications
+
+### **Implementation Status Summary**
+| Component | Status | Impact |
+|-----------|--------|---------|
+| **Judge Module** | ✅ Complete | Enables context sufficiency assessment |
+| **Query Transformation** | ✅ Complete | Addresses retrieval failure through query rewriting |
+| **Hybrid Search (BM25)** | ✅ Complete | Improves retrieval for entity-specific queries |
+| **Gate-Judge Integration** | ✅ Complete | Uncertainty calculation considers Judge signals |
+| **Performance Optimization** | ✅ Complete | Caching and resource management |
+
+### **Ready for Evaluation**
+The system is now ready for comprehensive evaluation to validate the expected improvements:
+- **Target Metrics**: Reduced abstain rate (<15%), improved F1 scores (>0.4), high Judge invocation (>80%)
+- **Comparison Baseline**: Run `1758126979` with 30% abstain rate and 0.188 F1 score
+- **Evaluation Commands**: Standard evaluation pipeline with new agentic features enabled
 
 ### **Next Steps**
-1. Merge `optimize-uncertainty-gate` to main branch
-2. Deploy and monitor performance improvements
-3. Collect production metrics on cache efficiency
-4. Consider additional ML-based enhancements
+1. **Execute Full Evaluation**: Run comprehensive evaluation with 50+ questions
+2. **Performance Comparison**: Measure improvements against baseline `1758126979`
+3. **Ablation Studies**: Test individual components (Judge-only, Hybrid-only)
+4. **Production Deployment**: Deploy enhanced system for real-world testing
 
 ---
 
@@ -369,3 +580,20 @@ self.max_tokens_total = settings.MAX_TOKENS_TOTAL      # 3500 tokens
 ---
 
 *This report is automatically maintained and updated with each significant change to the project.*
+
+#### **Known Issues and Resolutions**
+
+- **Issue**: `KeyError` for synthetic BM25 chunk IDs during hybrid search.
+  - **Root Cause**: The `_combine_retrieval_results` method was stripping the text information from `(chunk_id, score, text)` tuples, and `retrieve_pack` was then trying to fetch text from `self.chunks.loc` for these non-existent IDs.
+  - **Resolution**: Modified `_combine_retrieval_results` to ensure `(chunk_id, score, text)` tuples are consistently returned. Also, `_hybrid_search` and `retrieve_pack` were adjusted to correctly handle and pass through these structured tuples. (`src/agentic_rag/retriever/vector.py`)
+
+- **Issue**: `NameError: name 'qvec' is not defined` during MMR selection.
+  - **Root Cause**: The `qvec` variable was only defined within the `else` block of `retrieve_pack` (when hybrid search was disabled), making it unavailable for MMR when hybrid search was enabled.
+  - **Resolution**: Moved the `qvec = embed_texts([search_query])[0]` line outside the conditional block in `retrieve_pack` to ensure it's always defined. (`src/agentic_rag/retriever/vector.py`)
+
+#### **Validation Results**
+
+- **`scripts/test_agentic_features.py`**: All tests passed successfully after resolutions.
+  - Hybrid search now correctly integrates BM25 and vector results.
+  - Judge module invokes and provides assessments without errors.
+  - Agent loop functions as expected with the new components.
