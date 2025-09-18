@@ -557,7 +557,7 @@ class Agent(BaseAgent):
         draft = ""
         prev_overlap: float = 0.0
         prev_top_ids: set[str] = set()
-        EPS_OVERLAP = 0.02
+        EPS_OVERLAP = settings.EPSILON_OVERLAP
         # Min ratio of new docs in retrieved set to continue
         MIN_NEW_HITS_RATIO = 0.2
         # Max allowed similarity between consecutive retrieved sets
@@ -644,9 +644,6 @@ class Agent(BaseAgent):
                 prev_top_ids = curr_top_ids
                 break
 
-            # Update seen docs after novelty check
-            seen_doc_ids.update(retrieved_ids)
-
             print(f"🤖 Generating answer... (budget: {tokens_left} tokens left)")
             with timer() as t:
                 draft, usage = self.llm.chat(
@@ -697,7 +694,6 @@ class Agent(BaseAgent):
             retrieved_ids = cast(list[str], stats.get("retrieved_ids", []))
             new_hits = [d for d in retrieved_ids if d not in seen_doc_ids]
             has_new_hits = len(new_hits) > 0
-            seen_doc_ids.update(retrieved_ids)
 
             # Short-circuit: no new hits
             short_reason: str | None = None
@@ -748,17 +744,17 @@ class Agent(BaseAgent):
                 else:
                     action = GateAction.RETRIEVE_MORE
                     print("🚫 Gate OFF - continuing to next round")
-                if gate_extras.get("uncertainty_score"):
+                if "uncertainty_score" in gate_extras:
                     print(
                         f"🌡️  Enhanced uncertainty score: {gate_extras['uncertainty_score']:.3f}"
                     )
-                    if gate_extras.get("adaptive_weights"):
+                    if "adaptive_weights" in gate_extras:
                         weights = gate_extras["adaptive_weights"]
                         print(
                             f"⚖️  Adaptive weights: faith={weights.get('faith', 0):.2f}, "
                             f"overlap={weights.get('overlap', 0):.2f}, semantic={weights.get('semantic', 0):.2f}"
                         )
-                    if gate_extras.get("cache_hit_rate"):
+                    if "cache_hit_rate" in gate_extras:
                         print(f"💾 Cache hit rate: {gate_extras['cache_hit_rate']:.2f}")
 
             # Handle REFLECT action
@@ -866,12 +862,15 @@ class Agent(BaseAgent):
                 "has_new_hits": has_new_hits,
                 "n_ctx_blocks": stats.get("n_ctx_blocks"),
                 "context_tokens": stats.get("context_tokens"),
-                "reason": short_reason,
+                "reason": short_reason or gate_extras.get("stop_reason"),
                 "gen_tokens": usage.get("completion_tokens", 0),
                 "used_gate": "uncertainty",
                 "uncertainty_score": gate_extras.get("uncertainty_score"),
+                "new_hits_ratio": new_hits_ratio,
+                "cache_hit_rate": gate_extras.get("cache_hit_rate"),
             }
             self._log_jsonl(step_log, log_path)
+            seen_doc_ids.update(curr_top_ids)
 
             if (
                 action

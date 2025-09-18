@@ -234,3 +234,28 @@ def test_performance_with_batch_processing():
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+def test_low_budget_reason_flag():
+    """Ensure low-budget exits surface the stop reason."""
+    settings = Settings()
+    gate = UncertaintyGate(settings)
+    extras: dict[str, object] = {}
+    signals = GateSignals(
+        faith=0.5,
+        overlap=0.5,
+        lexical_uncertainty=0.1,
+        completeness=0.9,
+        semantic_coherence=0.9,
+        answer_length=120,
+        question_complexity=0.5,
+        budget_left_tokens=settings.LOW_BUDGET_TOKENS - 1,
+        round_idx=0,
+        has_reflect_left=True,
+        novelty_ratio=0.5,
+        extras=extras,
+    )
+
+    decision = gate.decide(signals)
+    assert decision == GateAction.STOP_LOW_BUDGET
+    assert extras.get("stop_reason") == "budget_exhausted"

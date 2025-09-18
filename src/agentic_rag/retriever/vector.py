@@ -20,6 +20,16 @@ class ContextChunk(TypedDict):
     score: float
 
 
+class Candidate(TypedDict):
+    doc_id: str
+    chunk_id: str
+    text: str
+    faiss_score: float
+    emb: object
+    score: float
+    rerank_score: float
+
+
 class VectorRetriever:
     def __init__(self, faiss_dir: str = "artifacts/faiss"):
         self.store = load_index(faiss_dir)
@@ -92,31 +102,54 @@ class VectorRetriever:
                 best_by_doc[doc_id] = (chunk_id, score)
 
         # Prepare candidates for reranking/MMR
-        candidates = []
-        for doc_id, (chunk_id, faiss_score) in best_by_doc.items():
-            text = self.chunks.loc[chunk_id, "text"]
-            # Get embedding for MMR (reuse query embedding approach)
-            emb = embed_texts([text])[0]
-            candidates.append(
-                {
-                    "doc_id": doc_id,
-                    "chunk_id": chunk_id,
-                    "text": text,
-                    "faiss_score": faiss_score,
-                    "emb": emb,
-                    "score": faiss_score,  # Default score
-                }
-            )
+        candidates: list[Candidate] = []
+        if best_by_doc:
+            chunk_items = list(best_by_doc.items())
+            chunk_ids = [item[1][0] for item in chunk_items]
+            texts = self.chunks.loc[chunk_ids, "text"].tolist()
+            embeddings = embed_texts(texts)
+            for (doc_id, (chunk_id, faiss_score)), text, emb in zip(
+                chunk_items, texts, embeddings
+            ):
+                candidates.append(
+                    {
+                        "doc_id": doc_id,
+                        "chunk_id": chunk_id,
+                        "text": text,
+                        "faiss_score": faiss_score,
+                        "emb": emb,
+                        "score": faiss_score,  # Default score
+                        "rerank_score": 0.0,
+                    }
+                )
 
         # Step 4: Optional reranking
         if self.reranker and candidates:
             try:
                 rerank_k = min(len(candidates), k * 2)  # Keep 2x target for MMR
                 print(f"   🏆 Reranking {len(candidates)} → {rerank_k} candidates...")
-                candidates = self.reranker.rerank(query, candidates, rerank_k)
-                # Update scores to rerank scores
+                reranked_results = self.reranker.rerank(
+                    query, [dict(c) for c in candidates], rerank_k
+                )
+
+                # Create a score map for efficient lookup
+                score_map = {
+                    item["chunk_id"]: item.get("rerank_score", 0.0)
+                    for item in reranked_results
+                }
+
+                # Update candidates with scores and filter
+                updated_candidates: list[Candidate] = []
                 for c in candidates:
-                    c["score"] = c.get("rerank_score", c["faiss_score"])
+                    if c["chunk_id"] in score_map:
+                        c["rerank_score"] = score_map[c["chunk_id"]]
+                        c["score"] = c["rerank_score"]
+                        updated_candidates.append(c)
+
+                # Sort by new score and take top_k
+                updated_candidates.sort(key=lambda x: x["score"], reverse=True)
+                candidates = updated_candidates[:rerank_k]
+
                 print("   🏆 Reranking completed")
             except Exception as e:
                 print(f"   ❌ Reranking failed, falling back to FAISS scores: {e}")
@@ -127,7 +160,12 @@ class VectorRetriever:
                 print(
                     f"   🎯 Applying MMR diversification (λ={settings.MMR_LAMBDA}) {len(candidates)} → {k}..."
                 )
-                candidates = mmr_select(qvec, candidates, k, settings.MMR_LAMBDA)
+                selected_candidates = mmr_select(
+                    qvec, [dict(c) for c in candidates], k, settings.MMR_LAMBDA
+                )
+                # Filter candidates to keep only those selected by MMR
+                selected_ids = {c["chunk_id"] for c in selected_candidates}
+                candidates = [c for c in candidates if c["chunk_id"] in selected_ids]
                 print("   🎯 MMR selection completed")
             except Exception as e:
                 print(f"   ❌ MMR selection failed, using top-k: {e}")
@@ -146,7 +184,7 @@ class VectorRetriever:
                 {
                     "id": candidate["doc_id"],
                     "text": candidate["text"],
-                    "score": float(candidate["score"]),
+                    "score": candidate["score"],
                 }
             )
             retrieved_ids.append(candidate["doc_id"])

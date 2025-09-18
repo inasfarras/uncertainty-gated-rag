@@ -8,7 +8,35 @@
 
 ## Recent Major Updates
 
-### 1. Enhanced Uncertainty Gate Implementation (September 17, 2025)
+### 1. Analysis of Agent Performance Run (September 18, 2025)
+
+#### **Issue Identified: High Abstain Rate and Low Answer Quality**
+An evaluation run (`logs/1758126979_agent_summary.csv`) on 50 questions revealed significant performance issues. The agent exhibited a high **Abstain Rate of 30%**, indicating it failed to answer nearly a third of the questions. For the questions it did answer, the quality was low, with an **Average F1 score of 0.188** and an **Average Exact Match (EM) of 0.0**.
+
+#### **Root Cause: Retrieval Failure**
+A manual analysis of the "I don't know" responses in `logs/1758126979_agent.jsonl` confirmed that the root cause is **retrieval failure**. The current RAG pipeline retrieves documents that are thematically related but lack the specific information required to answer the questions. The uncertainty gate is functioning correctly by preventing the model from hallucinating, but it highlights the weakness of the retrieval step.
+
+A key observation from the metrics is that the more advanced agentic features were not utilized (`Judge%Invoked: 0.0%`). The system operated in a basic retrieve-generate mode, which is insufficient for complex queries.
+
+#### **Key Metrics from Run `1758126979`**
+| Metric                      | Value   | Analysis                                                                                           |
+| --------------------------- | ------- | -------------------------------------------------------------------------------------------------- |
+| **Abstain Rate**            | `0.300` | High. The agent frequently and correctly abstains due to poor context.                             |
+| **Avg F1**                  | `0.188` | Very low. Indicates poor precision and recall in the answers that were provided.                   |
+| **Avg EM**                  | `0.000` | Indicates that the agent never produced a perfectly correct answer.                                |
+| **Avg Faithfulness**        | `0.616` | Low. Even when answering, the responses are not strongly supported by the retrieved context.         |
+| **Judge%Invoked**           | `0.000` | Critical. The agentic loop/self-correction mechanism was not triggered at all.                     |
+
+#### **Actionable Insights & Next Steps**
+The evaluation confirms that improving the agent's performance requires moving beyond a simple RAG pipeline and embracing a more "agentic" approach to retrieval.
+
+1.  **Activate and Enhance the "Judge" Module**: The immediate priority is to configure the agent loop to use the Judge/self-correction mechanism. This will allow the agent to re-evaluate poor-quality retrieved context and trigger remedial actions.
+2.  **Implement Query Transformation**: For queries that fail even after a Judge-led retry, the agent should be capable of transforming the query. This includes breaking complex questions into simpler sub-queries (query decomposition) or rephrasing them.
+3.  **Improve Core Retriever**: Investigate and implement a hybrid search mechanism (e.g., combining vector search with keyword-based BM25) to improve the initial retrieval quality, especially for queries with important keywords.
+
+---
+
+### 2. Enhanced Uncertainty Gate Implementation (September 17, 2025)
 
 #### **Issue Identified**
 The original uncertainty gate had several limitations affecting both accuracy and performance:
@@ -154,7 +182,7 @@ SEMANTIC_COHERENCE_WEIGHT: float = 0.10
 
 ---
 
-### 2. Previous Bug Fixes and Improvements (September 17, 2025)
+### 3. Previous Bug Fixes and Improvements (September 17, 2025)
 
 #### **Issue**: Code Quality and Type Safety
 - Multiple linting errors (ruff, black, mypy)
@@ -175,7 +203,7 @@ SEMANTIC_COHERENCE_WEIGHT: float = 0.10
 
 ---
 
-### 3. Code Quality Improvements Based on External Analysis (September 17, 2025)
+### 4. Code Quality Improvements Based on External Analysis (September 17, 2025)
 
 #### **Issues Identified by Code Analysis**
 External code review identified several important issues:

@@ -1,6 +1,6 @@
 import re
 import string
-from typing import Dict, List, Set
+from typing import Any, Dict, List, Set
 
 import numpy as np
 import numpy.typing as npt
@@ -115,8 +115,8 @@ def faithfulness_fallback(answer: str, gold: str | None, overlap: float) -> floa
     return min(1.0, 0.6 + 0.4 * overlap)
 
 
-def _normalize_text(t: str) -> str:
-    t = t.lower()
+def _normalize_text(t: Any) -> str:
+    t = str(t).lower()
     # Remove punctuation
     t = t.translate(str.maketrans("", "", string.punctuation))
     # Remove articles
@@ -157,7 +157,7 @@ def em_f1(pred: str, gold: str | None) -> Dict[str, float]:
 
 
 # Aliases to match alternate API names requested
-def normalize_text(s: str) -> str:
+def normalize_text(s: Any) -> str:
     return _normalize_text(s)
 
 
