@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
+import torch
 
 from agentic_rag.prompting import ContextBlock, pack_context
-
-
-def _cos(a: np.ndarray, b: np.ndarray) -> float:
-    """Compute cosine similarity between two L2-normalized vectors."""
-    return float(np.dot(a, b))
 
 
 def mmr_select(
@@ -24,62 +20,70 @@ def mmr_select(
     if not candidates:
         return []
 
-    selected_candidates = []
-    candidate_embeddings = np.array([c["emb"] for c in candidates])
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    query_embedding_t = torch.from_numpy(query_embedding).to(device)
+    candidate_embeddings_t = torch.from_numpy(
+        np.array([c["emb"] for c in candidates])
+    ).to(device)
 
     # Calculate similarity between query and all candidates
-    query_candidate_similarity = np.dot(candidate_embeddings, query_embedding)
+    query_candidate_similarity = torch.matmul(
+        candidate_embeddings_t, query_embedding_t
+    ).cpu()
 
     # Find the best candidate to start with
-    best_candidate_idx = np.argmax(query_candidate_similarity)
-    selected_candidates.append(candidates[best_candidate_idx])
+    best_candidate_idx = torch.argmax(query_candidate_similarity).item()
 
-    # Keep track of selected indices
+    selected_candidates = [candidates[best_candidate_idx]]
     selected_indices = {best_candidate_idx}
 
     while len(selected_candidates) < min(k, len(candidates)):
-        best_mmr_score = -np.inf
-        best_candidate_idx = -1
+        best_candidate_idx_to_add = -1
 
-        for i in range(len(candidates)):
-            if i in selected_indices:
-                continue
+        candidate_indices = [
+            i for i in range(len(candidates)) if i not in selected_indices
+        ]
+        if not candidate_indices:
+            break
 
-            # Similarity to query
-            sim_to_query = query_candidate_similarity[i]
+        unselected_embeddings_t = candidate_embeddings_t[candidate_indices]
+        selected_embeddings_t = candidate_embeddings_t[list(selected_indices)]
 
-            # Max similarity to already selected candidates
-            selected_embeddings = np.array([c["emb"] for c in selected_candidates])
-            sim_to_selected = np.max(
-                np.dot(selected_embeddings, candidate_embeddings[i])
-            )
+        # Calculate similarity between unselected and selected candidates
+        sim_to_selected = torch.matmul(unselected_embeddings_t, selected_embeddings_t.T)
+        max_sim_to_selected, _ = torch.max(sim_to_selected, dim=1)
+        max_sim_to_selected = max_sim_to_selected.cpu()
 
-            # MMR score
-            mmr_score = lambda_mult * sim_to_query - (1 - lambda_mult) * sim_to_selected
+        # Corresponding query similarities
+        sim_to_query = query_candidate_similarity[candidate_indices]
 
-            if mmr_score > best_mmr_score:
-                best_mmr_score = mmr_score
-                best_candidate_idx = i
+        # MMR score calculation
+        mmr_scores = (
+            lambda_mult * sim_to_query - (1 - lambda_mult) * max_sim_to_selected
+        )
 
-        if best_candidate_idx != -1:
-            selected_candidates.append(candidates[best_candidate_idx])
-            selected_indices.add(best_candidate_idx)
+        best_idx_in_unselected = torch.argmax(mmr_scores).item()
+        best_candidate_idx_to_add = candidate_indices[best_idx_in_unselected]
+
+        if best_candidate_idx_to_add != -1:
+            selected_candidates.append(candidates[best_candidate_idx_to_add])
+            selected_indices.add(best_candidate_idx_to_add)
         else:
-            # No more candidates to select
             break
 
     return selected_candidates
 
 
 def mmr_pack_context(
-    blocks: list[dict[str, Any]], max_tokens_cap: int, mmr_lambda: float
-) -> tuple[list[dict[str, Any]], int, int]:
+    blocks: list[ContextBlock], max_tokens_cap: int, mmr_lambda: float
+) -> tuple[list[ContextBlock], int, int]:
     """Pack context blocks using MMR for diversity."""
     # This is a placeholder. For now, we'll just use the default packing.
     # A full implementation would require embeddings for each block.
 
     # Cast the list of dicts to a list of ContextBlock to satisfy mypy
-    context_blocks = [cast(ContextBlock, block) for block in blocks]
+    context_blocks = blocks
 
     packed_blocks, total_tokens, n_blocks = pack_context(context_blocks, max_tokens_cap)
 

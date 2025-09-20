@@ -42,6 +42,7 @@ To address these issues, a series of enhancements were implemented across the ag
 - **Modified**: `src/agentic_rag/prompting_reflect.py` - Updated with the enhanced REFLECT prompt.
 - **Modified**: `src/agentic_rag/agent/loop.py` - Added new fields to per-round logging.
 - **Modified**: `docs/runbook.md` - Created a new, concise runbook for analysis and A/B testing.
+- **Modified**: `my-notes/My-experiment-note.md` - Added instructions for `analyze_run.js` and `analyze_per_question.js` usage.
 - **Utility Script**: `parse_logs.py` - Rewritten for more accurate log analysis.
 
 #### **Test Results and Validation**
@@ -54,6 +55,8 @@ To address these issues, a series of enhancements were implemented across the ag
   1.  Run the gate-on vs. gate-off A/B test using the new runbook to validate the enhancements.
   2.  Analyze the results of the A/B test, paying close attention to the impact of MMR and the improved REFLECT prompt.
   3.  Integrate the `extract_short_answer` function into the `runner.py` to re-calculate EM/F1 scores and report the potential gains.
+  4.  Documented the usage of `scripts/analyze_run.js` in `my-notes/My-experiment-note.md` to ensure clarity for evaluating run logs against datasets.
+  5.  Documented the usage of `scripts/analyze_per_question.js` in `my-notes/My-experiment-note.md` for detailed per-question analysis.
 
 ---
 
@@ -597,3 +600,16 @@ The system is now ready for comprehensive evaluation to validate the expected im
   - Hybrid search now correctly integrates BM25 and vector results.
   - Judge module invokes and provides assessments without errors.
   - Agent loop functions as expected with the new components.
+
+### 5. CUDA Activation (September 20, 2025)
+
+#### **Issue**: PyTorch CUDA Incompatibility
+- The installed PyTorch version was built for CUDA 11.8, while the system had CUDA 12.6 installed, leading to `torch.cuda.is_available()` returning `False`.
+
+#### **Resolution**: PyTorch Reinstallation for CUDA 12.1
+- Uninstalled the existing PyTorch (`torch 2.7.1+cu118`).
+- Installed a compatible PyTorch version (`torch 2.5.1+cu121`) that supports CUDA 12.1, which is compatible with the system's CUDA 12.6 driver.
+
+#### **Validation Results**
+- `python -c "import torch; print(torch.cuda.is_available())"` now returns `True`.
+- CUDA is successfully activated and available for PyTorch operations.

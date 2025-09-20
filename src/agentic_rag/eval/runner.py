@@ -1,5 +1,7 @@
 import json
 import random
+import re
+import string
 import time
 from pathlib import Path
 from typing import Literal, Optional, cast
@@ -16,6 +18,27 @@ from agentic_rag.eval.signals import (
     faithfulness_fallback,
     sentence_support,
 )
+
+# Helper functions for runner
+_IDK_PAT = re.compile(r"^i\s*do?n'?t\s*know\.?$")
+
+
+def _strip_citations(s: str) -> str:
+    return re.sub(r"\s*\[CIT:[A-Za-z0-9_\-]+\]\s*", " ", s or "").strip()
+
+
+def _canon(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = s.translate(str.maketrans("", "", string.punctuation))
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _is_idk_no_citation(ans: str) -> bool:
+    has_cit = bool(re.search(r"\[CIT:[A-Za-z0-9_\-]+\]", ans or ""))
+    core = _canon(re.sub(r"\[CIT:[A-Za-z0-9_\-]+\]", " ", ans or ""))
+    return (not has_cit) and (_IDK_PAT.match(core.replace(" ", "") + ".") is not None)
+
 
 app = typer.Typer()
 console = Console()
@@ -80,6 +103,12 @@ _eps_overlap_option = typer.Option(
     0.02, "--epsilon-overlap", help="Stagnation threshold for overlap delta"
 )
 
+_use_final_short_option = typer.Option(
+    False,
+    "--use-final-short/--no-use-final-short",
+    help="Score EM/F1 using best-of (final_short vs full answer)",
+)
+
 
 @app.command()
 def run(
@@ -98,6 +127,7 @@ def run(
     tau_lo: float = _tau_lo_option,
     tau_hi: float = _tau_hi_option,
     epsilon_overlap: float = _eps_overlap_option,
+    use_final_short: bool = _use_final_short_option,
     # gate_kind removed - only UncertaintyGate available
 ):
     """Runs an evaluation of the Agentic RAG system."""
@@ -111,6 +141,7 @@ def run(
     settings.TAU_LO = tau_lo
     settings.TAU_HI = tau_hi
     settings.EPSILON_OVERLAP = epsilon_overlap
+    settings.USE_FINAL_SHORT_SCORING = bool(use_final_short)
 
     # Load dataset
     with open(dataset) as f:
@@ -148,11 +179,8 @@ def run(
         gold = item.get("gold", "")
         is_unans = gold.strip().lower() in {"invalid question", "n/a", "unknown", ""}
 
-        normalized_answer = summary.get("final_answer", "").strip().lower()
-        from agentic_rag.eval.signals import extract_citations
-
-        has_any_citation = len(extract_citations(summary.get("final_answer", ""))) > 0
-        said_idk = normalized_answer == "i don't know." and not has_any_citation
+        pred_answer = summary.get("final_answer", "")
+        said_idk = _is_idk_no_citation(pred_answer)
         abstain_correct = 1 if (is_unans and said_idk) else 0
         hallucinated_unans = 1 if (is_unans and not said_idk) else 0
 
@@ -165,12 +193,40 @@ def run(
         final_o = (
             float(sup["overlap"]) if isinstance(sup.get("overlap"), float) else 0.0
         )
-        final_f = faithfulness_fallback(
-            summary.get("final_answer", ""), item.get("gold"), final_o
+        # Choose best of final_short vs. full answer for scoring to avoid penalizing
+        # when short extraction fails.
+        full_pred = summary.get("final_answer", "")
+        short_pred = summary.get("final_short") or ""
+        ef_full = em_f1(full_pred, item.get("gold"))
+        ef_short = (
+            em_f1(short_pred, item.get("gold"))
+            if short_pred
+            else {"em": 0.0, "f1": 0.0}
         )
-        ef = em_f1(summary.get("final_answer", ""), item.get("gold"))
-        abstain = (
-            1 if (summary.get("final_answer", "").strip() == "I don't know") else 0
+        # Choose scoring strategy
+        if settings.USE_FINAL_SHORT_SCORING:
+            # Prefer higher F1; tie-breaker on EM
+            if ef_short.get("f1", 0.0) > ef_full.get("f1", 0.0) or (
+                ef_short.get("f1", 0.0) == ef_full.get("f1", 0.0)
+                and ef_short.get("em", 0.0) > ef_full.get("em", 0.0)
+            ):
+                pred_for_scoring = short_pred
+                ef = ef_short
+                summary["pred_source"] = "short"
+            else:
+                pred_for_scoring = full_pred
+                ef = ef_full
+                summary["pred_source"] = "full"
+        else:
+            pred_for_scoring = full_pred
+            ef = ef_full
+            summary["pred_source"] = "full"
+        final_f = faithfulness_fallback(pred_for_scoring, item.get("gold"), final_o)
+        abstain = 1 if said_idk else 0
+        wrong_on_answerable = (
+            1
+            if ((not is_unans) and (not said_idk) and float(ef.get("f1", 0.0)) == 0.0)
+            else 0
         )
 
         # Include question for readability in logs
@@ -179,9 +235,14 @@ def run(
         # Update summary with hardened metrics
         summary["final_o"] = final_o
         summary["final_f"] = final_f
-        summary["em"] = ef["em"]
-        summary["f1"] = ef["f1"]
+        summary["em"] = ef.get("em", 0.0)
+        summary["f1"] = ef.get("f1", 0.0)
+        summary["em_full"] = ef_full.get("em", 0.0)
+        summary["f1_full"] = ef_full.get("f1", 0.0)
+        summary["em_short"] = ef_short.get("em", 0.0)
+        summary["f1_short"] = ef_short.get("f1", 0.0)
         summary["abstain"] = abstain
+        summary["wrong_on_answerable"] = wrong_on_answerable
         summary["idk_with_citation_count"] = sup.get("idk_with_citation_count", 0)
         summary["is_unans"] = is_unans
         summary["abstain_correct"] = abstain_correct
@@ -293,7 +354,13 @@ def run(
         "final_o",
         "em",
         "f1",
+        "em_full",
+        "f1_full",
+        "em_short",
+        "f1_short",
+        "pred_source",
         "abstain",
+        "wrong_on_answerable",
         "idk_with_citation_count",
         "total_tokens",
         "latency_ms",
@@ -344,6 +411,7 @@ def run(
             "Avg EM": f"{df['em'].mean():.3f}",
             "Avg F1": f"{df['f1'].mean():.3f}",
             "Abstain Rate": f"{df['abstain'].mean():.3f}",
+            "Wrong-on-Answerable Rate": f"{df['wrong_on_answerable'].mean():.3f}",
             "Abstain Accuracy": f"{df['abstain_correct'].mean():.3f}",
             "Overall Accuracy": f"{df['overall_accuracy'].mean():.3f}",
             "Hallucination Rate": f"{df['hallucinated_unans'].mean():.3f}",

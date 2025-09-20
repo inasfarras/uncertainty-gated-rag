@@ -68,3 +68,19 @@ The current agent system includes:
 - **Enhanced Debug Output**: Detailed progress tracking with emojis
 
 ---
+
+## 6. Analysis
+
+After running the evaluations, you can analyze the results using the `analyze_run.js` script. This script computes EM/F1 scores and categorizes the results.
+
+```powershell
+# Usage: node scripts/analyze_run.js <run.jsonl> <dataset.jsonl>
+node scripts/analyze_run.js logs/1758373375_agent.jsonl data/crag_questions.jsonl
+```
+
+For a more detailed, per-question reason analysis, use the `analyze_per_question.js` script.
+
+```powershell
+# Usage: node scripts/analyze_per_question.js <run.jsonl> <dataset.jsonl>
+node scripts/analyze_per_question.js logs/1758373375_agent.jsonl data/crag_questions.jsonl
+```

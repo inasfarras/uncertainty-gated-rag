@@ -1,5 +1,4 @@
 import re
-import string
 from typing import Any, Dict, List, Set
 
 import numpy as np
@@ -117,10 +116,6 @@ def faithfulness_fallback(answer: str, gold: str | None, overlap: float) -> floa
 
 def _normalize_text(t: Any) -> str:
     t = str(t).lower()
-    # Remove punctuation
-    t = t.translate(str.maketrans("", "", string.punctuation))
-    # Remove articles
-    t = re.sub(r"\b(a|an|the)\b", " ", t)
     # Normalize whitespace
     t = re.sub(r"\s+", " ", t).strip()
     return t

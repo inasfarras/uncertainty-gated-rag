@@ -6,8 +6,15 @@ from typing import Any, Dict, List, cast
 import numpy as np
 import typer
 
+from agentic_rag.agent import finalize as finalize_utils
 from agentic_rag.agent.gate import GateAction, GateSignals, make_gate
-from agentic_rag.agent.judge import create_judge, create_query_transformer
+from agentic_rag.agent.judge import (
+    anchors_present_in_texts,
+    create_judge,
+    create_query_transformer,
+    extract_required_anchors,
+    validate_factoid_anchors,
+)
 from agentic_rag.config import settings
 from agentic_rag.eval.signals import (
     CIT_RE,
@@ -566,6 +573,13 @@ class Agent(BaseAgent):
         # Max allowed similarity between consecutive retrieved sets
         MAX_JACCARD_SIM = 0.8
         has_reflect_left = True
+        # Defaults for metrics in case no generation occurs
+        f: float = 0.0
+        o: float = 0.0
+        faith_ragas = None  # type: ignore[assignment]
+        faith_fallback: float = 0.6
+        action = "INIT"
+        used_judge = False
 
         print(f"⚙️  Config: MAX_ROUNDS={settings.MAX_ROUNDS}, GATE=UncertaintyGate")
         print(
@@ -649,6 +663,136 @@ class Agent(BaseAgent):
                 prev_top_ids = curr_top_ids
                 break
 
+            # Optional: Pre-generation Judge to assess context sufficiency
+            used_judge = False
+            judge_assessment = None
+            if getattr(settings, "JUDGE_PREGEN", True):
+                print("🧠 Pre-generation Judge: assessing context sufficiency...")
+                judge_assessment = self.judge.assess_context_sufficiency(
+                    question, contexts, round_idx=r - 1
+                )
+                used_judge = True
+                print(
+                    f"🧠 Judge (pre-gen): sufficient={judge_assessment.is_sufficient}, "
+                    f"conf={judge_assessment.confidence:.2f}, action={judge_assessment.suggested_action}"
+                )
+
+                # If clearly insufficient, optionally try transformation or skip generation for this round
+                if (not judge_assessment.is_sufficient) and (
+                    judge_assessment.confidence > 0.7
+                ):
+                    did_transform = False
+                    if (
+                        judge_assessment.suggested_action == "TRANSFORM_QUERY"
+                        and r == 1
+                    ):
+                        print(
+                            "🔄 Judge suggests transformation (pre-gen). Trying remedial retrieval..."
+                        )
+                        transformations = self.query_transformer.transform_query(
+                            question, judge_assessment, contexts
+                        )
+                        if transformations:
+                            for i, transformed_query in enumerate(transformations[:2]):
+                                print(
+                                    f"🔄 [Pre-gen] Transformation {i + 1}: {transformed_query[:80]}..."
+                                )
+                                transform_contexts, transform_stats = (
+                                    self.retriever.retrieve_pack(
+                                        transformed_query,
+                                        k=k,
+                                        exclude_doc_ids=seen_doc_ids,
+                                        probe_factor=settings.PROBE_FACTOR,
+                                        round_idx=r,
+                                        llm_client=self.llm,
+                                    )
+                                )
+                                transform_ids = cast(
+                                    list[str], transform_stats.get("retrieved_ids", [])
+                                )
+                                new_transform_hits = [
+                                    d for d in transform_ids if d not in seen_doc_ids
+                                ]
+                                if new_transform_hits:
+                                    print(
+                                        f"🔄 [Pre-gen] Transformation {i + 1} added {len(new_transform_hits)} new contexts"
+                                    )
+                                    contexts.extend(transform_contexts[:3])
+                                    seen_doc_ids.update(new_transform_hits)
+                                    enhanced_judge = (
+                                        self.judge.assess_context_sufficiency(
+                                            question, contexts, round_idx=r - 1
+                                        )
+                                    )
+                                    if enhanced_judge.is_sufficient:
+                                        print(
+                                            "✅ [Pre-gen] Contexts now sufficient after transformation"
+                                        )
+                                        judge_assessment = enhanced_judge
+                                        did_transform = True
+                                        break
+                    if not did_transform:
+                        if r < settings.MAX_ROUNDS:
+                            # Skip generation and go retrieve more next round
+                            action = GateAction.RETRIEVE_MORE
+                            step_log = {
+                                "qid": qid,
+                                "round": r,
+                                "action": "SKIP_GEN_RETRIEVE",
+                                "k": k,
+                                "mode": mode,
+                                "tokens_left": tokens_left,
+                                "usage": None,
+                                "latency_ms": 0,
+                                "retrieved_ids": retrieved_ids,
+                                "new_hits": new_hits,
+                                "has_new_hits": has_new_hits,
+                                "new_hits_ratio": new_hits_ratio,
+                                "jaccard": jaccard_sim,
+                                "n_ctx_blocks": stats.get("n_ctx_blocks"),
+                                "context_tokens": stats.get("context_tokens"),
+                                "reason": "PREGEN_JUDGE_INSUFFICIENT",
+                                "used_gate": "uncertainty",
+                            }
+                            self._log_jsonl(step_log, log_path)
+                            # Prepare for next round
+                            k = min(32, k + 4)
+                            prev_top_ids = curr_top_ids
+                            print(
+                                f"⏭️  Skipping generation this round due to insufficient context; next k={k}"
+                            )
+                            continue
+                        else:
+                            # Last round and still insufficient: abstain to produce a stable summary
+                            draft = "I don't know"
+                            f = 0.0
+                            o = 0.0
+                            action = GateAction.ABSTAIN
+                            step_log = {
+                                "qid": qid,
+                                "round": r,
+                                "action": "STOP_PREGEN_JUDGE_ABSTAIN",
+                                "k": k,
+                                "mode": mode,
+                                "tokens_left": tokens_left,
+                                "usage": None,
+                                "latency_ms": 0,
+                                "retrieved_ids": retrieved_ids,
+                                "new_hits": new_hits,
+                                "has_new_hits": has_new_hits,
+                                "new_hits_ratio": new_hits_ratio,
+                                "jaccard": jaccard_sim,
+                                "n_ctx_blocks": stats.get("n_ctx_blocks"),
+                                "context_tokens": stats.get("context_tokens"),
+                                "reason": "PREGEN_JUDGE_INSUFFICIENT_LAST_ROUND",
+                                "used_gate": "uncertainty",
+                            }
+                            self._log_jsonl(step_log, log_path)
+                            print(
+                                "⛔ Last round with insufficient context — abstaining."
+                            )
+                            break
+
             print(f"🤖 Generating answer... (budget: {tokens_left} tokens left)")
             with timer() as t:
                 draft, usage = self.llm.chat(
@@ -681,8 +825,7 @@ class Agent(BaseAgent):
             print(f"📈 Overlap score: {o:.3f} (threshold: {settings.OVERLAP_TAU})")
 
             # Enhanced Judge Assessment - Always invoke for first round
-            used_judge = False
-            judge_assessment = None
+            # Note: judge_assessment may have been computed pre-generation
             faith_ragas = None
             faith_fallback = min(1.0, 0.6 + 0.4 * o)
 
@@ -694,7 +837,7 @@ class Agent(BaseAgent):
                 or (policy == "gray_zone" and settings.TAU_LO <= o < settings.TAU_HI)
             )
 
-            if should_use_judge:
+            if should_use_judge and judge_assessment is None:
                 print("🧠 Invoking Judge for context sufficiency assessment...")
                 judge_assessment = self.judge.assess_context_sufficiency(
                     question, contexts, round_idx=r - 1
@@ -718,6 +861,29 @@ class Agent(BaseAgent):
             new_hits = [d for d in retrieved_ids if d not in seen_doc_ids]
             has_new_hits = len(new_hits) > 0
 
+            # Prepare gate extras early so logging never breaks
+            gate_extras: Dict[str, Any] = {}
+            # Initialize anchor variables for logging regardless of branch
+            qtype = finalize_utils.detect_type(question)
+            required_anchors = []  # type: list[str]
+            anchor_cov = 0.0
+            anchor_missing: list[str] = []
+            validators: Dict[str, Any] = {}
+            used_anchor_constrained_search = False
+
+            try:
+                required_anchors = list(extract_required_anchors(question))
+                present_set, anchor_cov = anchors_present_in_texts(
+                    set(required_anchors), [c["text"] for c in contexts]
+                )
+                anchor_missing = sorted(list(set(required_anchors) - present_set))
+                validators = validate_factoid_anchors(
+                    question, [c["text"] for c in contexts]
+                )
+            except Exception:
+                # Keep defaults if any helper fails
+                pass
+
             # Short-circuit: no new hits
             short_reason: str | None = None
             if r > 1 and not has_new_hits:
@@ -740,13 +906,23 @@ class Agent(BaseAgent):
                 semantic_coherence = _assess_semantic_coherence(draft, question)
                 question_complexity = _assess_question_complexity(question)
 
-                gate_extras: Dict[str, Any] = {}
+                # Populate gate extras during full gate evaluation
+                gate_extras = {}
 
                 # Integrate Judge signals into gate if available
                 if judge_assessment:
                     gate_extras["judge_sufficient"] = judge_assessment.is_sufficient
                     gate_extras["judge_confidence"] = judge_assessment.confidence
                     gate_extras["judge_action"] = judge_assessment.suggested_action
+                    # New: pass deeper quality signals
+                    if getattr(judge_assessment, "anchor_coverage", None) is not None:
+                        gate_extras["anchor_coverage"] = (
+                            judge_assessment.anchor_coverage
+                        )
+                    if getattr(judge_assessment, "conflict_risk", None) is not None:
+                        gate_extras["conflict_risk"] = judge_assessment.conflict_risk
+                    if getattr(judge_assessment, "mismatch_flags", None) is not None:
+                        gate_extras["mismatch_flags"] = judge_assessment.mismatch_flags
 
                     # If judge says insufficient with high confidence, consider query transformation
                     if (
@@ -822,6 +998,19 @@ class Agent(BaseAgent):
                                         )
                                         break
 
+                # Anchor extraction & validation for factoids
+                qtype = finalize_utils.detect_type(question)
+                required_anchors = list(extract_required_anchors(question))
+                present_set, anchor_cov = anchors_present_in_texts(
+                    set(required_anchors), context_texts
+                )
+                anchor_missing = sorted(list(set(required_anchors) - present_set))
+                validators = validate_factoid_anchors(question, context_texts)
+                gate_extras["required_anchors"] = required_anchors
+                gate_extras["anchor_coverage"] = anchor_cov
+                gate_extras["missing_anchors"] = anchor_missing
+                gate_extras.update(validators)
+
                 signals = GateSignals(
                     faith=f,
                     overlap=o,
@@ -861,10 +1050,93 @@ class Agent(BaseAgent):
                     if "cache_hit_rate" in gate_extras:
                         print(f"💾 Cache hit rate: {gate_extras['cache_hit_rate']:.2f}")
 
+            # If about to STOP or ABSTAIN on a factoid with missing anchors, try one anchor-constrained retrieval
+            used_anchor_constrained_search = False
+            if (
+                action in (GateAction.STOP, GateAction.ABSTAIN)
+                and tokens_left >= 300
+                and qtype in ("date", "number", "entity")
+            ):
+                fail_time = gate_extras.get("fail_time", False)
+                fail_unit = gate_extras.get("fail_unit", False)
+                fail_event = gate_extras.get("fail_event", False)
+                cov = float(gate_extras.get("anchor_coverage", 1.0) or 1.0)
+                if fail_time or fail_unit or fail_event or cov < 0.5:
+                    new_query = question
+                    if anchor_missing:
+                        new_query = question + " " + " ".join(anchor_missing[:4])
+                    print(
+                        f"🧲 Anchor-constrained retrieval: missing={anchor_missing[:4]} (cov={cov:.2f})"
+                    )
+                    used_anchor_constrained_search = True
+                    # Retrieve with constrained query
+                    transform_contexts, transform_stats = self.retriever.retrieve_pack(
+                        new_query,
+                        k=k,
+                        exclude_doc_ids=seen_doc_ids,
+                        probe_factor=settings.PROBE_FACTOR,
+                        round_idx=r,  # subsequent round
+                        llm_client=self.llm,
+                    )
+                    transform_ids = cast(
+                        list[str], transform_stats.get("retrieved_ids", [])
+                    )
+                    new_transform_hits = [
+                        d for d in transform_ids if d not in seen_doc_ids
+                    ]
+                    if new_transform_hits:
+                        print(
+                            f"🧲 Anchor-constrained search found {len(new_transform_hits)} new docs"
+                        )
+                        # Merge new contexts and regenerate once
+                        contexts = transform_contexts[
+                            : max(2, min(4, len(transform_contexts)))
+                        ]
+                        context_texts = [c["text"] for c in contexts]
+                        context_ids = [c["id"] for c in contexts]
+                        prompt, debug_prompt = build_prompt(contexts, question)
+                        with timer() as t2:
+                            draft, usage = self.llm.chat(
+                                messages=prompt,
+                                max_tokens=settings.MAX_OUTPUT_TOKENS,
+                                temperature=settings.TEMPERATURE,
+                            )
+                        latency_ms = t2()
+                        latencies.append(latency_ms)
+                        total_tokens += usage["total_tokens"]
+                        tokens_left -= usage["total_tokens"]
+                        if _should_force_idk(question, context_texts):
+                            draft = "I don't know"
+                        draft = _normalize_answer(draft, context_ids)
+                        sup = sentence_support(
+                            draft,
+                            {i: t for i, t in zip(context_ids, context_texts)},
+                            tau_sim=settings.OVERLAP_SIM_TAU,
+                        )
+                        o = float(sup.get("overlap", 0.0))
+                        f = (
+                            faith_ragas
+                            if faith_ragas is not None
+                            else min(1.0, 0.6 + 0.4 * o)
+                        )
+                        print(
+                            f"🧲 After anchor-constrained generation: f={f:.3f}, o={o:.3f}"
+                        )
+                        action = (
+                            GateAction.STOP
+                            if (
+                                f >= settings.FAITHFULNESS_TAU
+                                and o >= settings.OVERLAP_TAU
+                            )
+                            else GateAction.RETRIEVE_MORE
+                        )
+
             # Handle REFLECT action
             if should_reflect(action, has_reflect_left):
                 print("🤔 Applying REFLECT to improve answer...")
-                reflect_messages, reflect_debug = build_reflect_prompt(contexts, draft)
+                reflect_messages, reflect_debug = build_reflect_prompt(
+                    contexts, draft, required_anchors=required_anchors
+                )
                 with timer() as t_reflect:
                     reflected_answer, reflect_usage = self.llm.chat(
                         messages=reflect_messages,
@@ -972,6 +1244,23 @@ class Agent(BaseAgent):
                 "uncertainty_score": gate_extras.get("uncertainty_score"),
                 "new_hits_ratio": new_hits_ratio,
                 "cache_hit_rate": gate_extras.get("cache_hit_rate"),
+                "used_hyde": stats.get("used_hyde"),
+                "used_hybrid": stats.get("used_hybrid"),
+                "used_rerank": stats.get("used_rerank"),
+                "used_mmr": stats.get("used_mmr"),
+                "required_anchors": required_anchors,
+                "anchor_coverage": anchor_cov,
+                "missing_anchors": anchor_missing,
+                "fail_time": (
+                    validators.get("fail_time") if "validators" in locals() else None
+                ),
+                "fail_unit": (
+                    validators.get("fail_unit") if "validators" in locals() else None
+                ),
+                "fail_event": (
+                    validators.get("fail_event") if "validators" in locals() else None
+                ),
+                "used_anchor_constrained_search": used_anchor_constrained_search,
             }
             self._log_jsonl(step_log, log_path)
             seen_doc_ids.update(curr_top_ids)
@@ -1006,10 +1295,17 @@ class Agent(BaseAgent):
         print(f"   Unique docs seen: {len(seen_doc_ids)}")
         print(f"   Final action: {action}")
 
+        # Provide a minimal short answer for EM/F1 scoring when possible
+        try:
+            final_short = finalize_utils.finalize_short_answer(question, draft)
+        except Exception:
+            final_short = None
+
         summary_log = {
             "qid": qid,
             "question": question,
             "final_answer": draft,
+            "final_short": final_short,
             "final_f": f,
             "final_o": o,
             "final_faith_fallback": faith_fallback,

@@ -44,6 +44,12 @@ class UncertaintyGate(BaseGate):
         self.tau_uncertain = settings.UNCERTAINTY_TAU
         self.low_budget_tokens = settings.LOW_BUDGET_TOKENS
         self.max_tokens_total = settings.MAX_TOKENS_TOTAL
+        self.strict_stop_requires_judge = getattr(
+            settings, "STRICT_STOP_REQUIRES_JUDGE_OK", True
+        )
+        self.judge_min_conf_for_stop = getattr(settings, "JUDGE_MIN_CONF_FOR_STOP", 0.8)
+        self.anchor_cov_tau = getattr(settings, "ANCHOR_COVERAGE_TAU", 0.6)
+        self.conflict_risk_tau = getattr(settings, "CONFLICT_RISK_TAU", 0.25)
 
         # Enhanced adaptive weights
         self.base_weights = {
@@ -91,12 +97,52 @@ class UncertaintyGate(BaseGate):
             return self._decide_uncached(signals)
 
     def _decide_uncached(self, signals: GateSignals) -> str:
-        # Early high-confidence stop condition (optimized)
+        # Early high-confidence stop condition (optimized) with Judge override
         if signals.faith >= self.tau_f and signals.overlap >= self.tau_o:
+            judge_ok = True
             if signals.extras is not None:
-                signals.extras["uncertainty_score"] = 0.0
-                signals.extras["stop_reason"] = "high_confidence"
-            return GateAction.STOP
+                js = signals.extras.get("judge_sufficient")
+                jc = float(signals.extras.get("judge_confidence", 0.0) or 0.0)
+                anchor_cov = signals.extras.get("anchor_coverage")
+                conflict_risk = signals.extras.get("conflict_risk")
+                mismatch_flags = signals.extras.get("mismatch_flags") or {}
+
+                # Default: if strict mode enabled, require judge agreement and adequate anchors
+                if self.strict_stop_requires_judge:
+                    # If judge explicitly says insufficient with decent confidence, do not stop
+                    if js is False and jc >= 0.6:
+                        judge_ok = False
+                    # If judge did not run or is unsure, still enforce anchors/conflict checks if available
+                    if (
+                        anchor_cov is not None
+                        and float(anchor_cov) < self.anchor_cov_tau
+                    ):
+                        judge_ok = False
+                    if (
+                        conflict_risk is not None
+                        and float(conflict_risk) > self.conflict_risk_tau
+                    ):
+                        judge_ok = False
+                    if mismatch_flags and (
+                        mismatch_flags.get("temporal_mismatch")
+                        or mismatch_flags.get("unit_mismatch")
+                        or mismatch_flags.get("entity_mismatch")
+                    ):
+                        judge_ok = False
+                    # Even if judge says sufficient, require minimal confidence
+                    if js is True and jc < self.judge_min_conf_for_stop:
+                        judge_ok = False
+
+                if judge_ok:
+                    signals.extras["uncertainty_score"] = 0.0
+                    signals.extras["stop_reason"] = "high_confidence"
+                    return GateAction.STOP
+                else:
+                    # Fall-through to uncertainty calculation (i.e., don't early stop)
+                    pass
+            else:
+                # No extras: allow early stop
+                return GateAction.STOP
 
         # Fast budget check using configured threshold
         if signals.budget_left_tokens < self.low_budget_tokens:
@@ -171,6 +217,9 @@ class UncertaintyGate(BaseGate):
         if signals.extras:
             judge_sufficient = signals.extras.get("judge_sufficient")
             judge_confidence = signals.extras.get("judge_confidence", 0.5)
+            anchor_cov = signals.extras.get("anchor_coverage")
+            conflict_risk = signals.extras.get("conflict_risk")
+            mismatch_flags = signals.extras.get("mismatch_flags") or {}
 
             if judge_sufficient is not None:
                 # Judge signal: if insufficient with high confidence, increase uncertainty
@@ -182,6 +231,27 @@ class UncertaintyGate(BaseGate):
                     uncertainty *= 0.7  # Strong signal for stopping
                 elif judge_sufficient and judge_confidence > 0.6:
                     uncertainty *= 0.85  # Moderate signal for stopping
+
+            # Penalize low anchor coverage / high conflict / mismatches
+            try:
+                if anchor_cov is not None and float(anchor_cov) < self.anchor_cov_tau:
+                    uncertainty = min(1.0, uncertainty + 0.15)
+            except Exception:
+                pass
+            try:
+                if (
+                    conflict_risk is not None
+                    and float(conflict_risk) > self.conflict_risk_tau
+                ):
+                    uncertainty = min(1.0, uncertainty + 0.1)
+            except Exception:
+                pass
+            if mismatch_flags and (
+                mismatch_flags.get("temporal_mismatch")
+                or mismatch_flags.get("unit_mismatch")
+                or mismatch_flags.get("entity_mismatch")
+            ):
+                uncertainty = min(1.0, uncertainty + 0.15)
 
         return min(1.0, uncertainty)
 

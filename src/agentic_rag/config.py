@@ -50,10 +50,29 @@ class Settings(BaseSettings):
     # Hybrid search combining vector and BM25
     USE_HYBRID_SEARCH: bool = True
     HYBRID_ALPHA: float = 0.7  # Weight for vector vs BM25 (0.7 = 70% vector, 30% BM25)
+    ANCHOR_BONUS: float = 0.07  # Score bonus for candidates containing question anchors
     # Judge policy for RAGAS invocation in agent loop: never | gray_zone | always
     JUDGE_POLICY: Literal["never", "gray_zone", "always"] = (
         "always"  # Enable judge by default
     )
+    # Judge timing & thresholds
+    JUDGE_PREGEN: bool = True  # Run Judge before generation
+    JUDGE_MIN_CONF_FOR_STOP: float = 0.8  # Require judge OK at/above this to early STOP
+    STRICT_STOP_REQUIRES_JUDGE_OK: bool = (
+        True  # If True, don't early stop on f/o unless judge agrees
+    )
+    # Context quality thresholds
+    ANCHOR_COVERAGE_TAU: float = 0.6  # Min anchor coverage for sufficiency
+    CONFLICT_RISK_TAU: float = 0.25  # Above this, treat as insufficient
+
+    # Scoring/analysis toggles
+    USE_FINAL_SHORT_SCORING: bool = (
+        False  # If True, runner will prefer best-of (final_short vs full)
+    )
+    FINAL_SHORT_ALLOW_ENTITY: bool = (
+        False  # If True, entity extraction used in final_short
+    )
+
     # Removed GATE_KIND - only UncertaintyGate is available
 
     LOG_DIR: str = "logs"

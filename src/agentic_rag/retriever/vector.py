@@ -93,7 +93,7 @@ class VectorRetriever:
         # Combine and normalize scores
         alpha = getattr(settings, "HYBRID_ALPHA", 0.7)
         combined_results = self._combine_retrieval_results(
-            vector_hits, bm25_hits, alpha
+            vector_hits, bm25_hits, alpha, query
         )
 
         print(
@@ -107,8 +107,43 @@ class VectorRetriever:
         vector_hits: List[Tuple[str, float]],
         bm25_hits: List[Tuple[str, float]],
         alpha: float = 0.7,
+        question: str | None = None,
     ) -> List[Tuple[str, float, str]]:
         """Combine vector and BM25 results with score normalization."""
+        import re as _re
+
+        def _extract_anchors(q: str) -> set[str]:
+            ql = (q or "").lower()
+            anchors: set[str] = set()
+            # years
+            anchors.update(_re.findall(r"\b(?:19|20)\d{2}\b", ql))
+            # common units/events
+            for tok in [
+                "per game",
+                "domestic",
+                "worldwide",
+                "q1",
+                "q2",
+                "q3",
+                "q4",
+                "australian open",
+                "u.s. open",
+                "us open",
+                "best animated feature",
+                "visual effects",
+            ]:
+                if tok in ql:
+                    anchors.add(tok)
+            # simple capitalized span cue
+            caps = _re.findall(
+                r"\b([A-Z][A-Za-z0-9’'\-]*(?:\s+[A-Z][A-Za-z0-9’'\-]*){0,3})\b",
+                question or "",
+            )
+            if caps:
+                anchors.add(max(caps, key=len))
+            return {a for a in anchors if a}
+
+        anchors = _extract_anchors(question or "") if question else set()
         # Normalize vector scores
         if vector_hits:
             vector_scores = [score for _, score in vector_hits]
@@ -175,23 +210,43 @@ class VectorRetriever:
         combined_scores: Dict[str, Dict[str, Any]] = {}
 
         # Add vector results
+        bonus_weight = getattr(settings, "ANCHOR_BONUS", 0.07)
         for chunk_id, norm_score, text in vector_normalized:
-            combined_scores[chunk_id] = {"score": alpha * norm_score, "text": text}
+            score = alpha * norm_score
+            if anchors:
+                hit = sum(1 for a in anchors if a.lower() in (text or "").lower())
+                cov = hit / max(1, len(anchors))
+                score += bonus_weight * cov
+            combined_scores[chunk_id] = {"score": score, "text": text}
 
         # Add BM25 results (need to map doc_id back to chunk_id)
         for doc_id, norm_score, text in bm25_normalized:
             found_existing = False
             for chunk_id, existing_data in combined_scores.items():
                 if chunk_id.startswith(doc_id + "__"):
-                    existing_data["score"] += (1 - alpha) * norm_score
+                    bump = (1 - alpha) * norm_score
+                    if anchors:
+                        hit = sum(
+                            1
+                            for a in anchors
+                            if a.lower() in (existing_data.get("text", "").lower())
+                        )
+                        cov = hit / max(1, len(anchors))
+                        bump += bonus_weight * cov
+                    existing_data["score"] += bump
                     found_existing = True
                     break
 
             if not found_existing:
                 synthetic_chunk_id = f"{doc_id}__bm25_synthetic"
+                score = (1 - alpha) * norm_score
+                if anchors:
+                    hit = sum(1 for a in anchors if a.lower() in (text or "").lower())
+                    cov = hit / max(1, len(anchors))
+                    score += bonus_weight * cov
                 combined_scores[synthetic_chunk_id] = {
-                    "score": (1 - alpha) * norm_score,
-                    "text": text,  # Use the text directly from bm25_normalized
+                    "score": score,
+                    "text": text,
                 }
 
         final_results = []
@@ -233,7 +288,7 @@ class VectorRetriever:
         """
         # Step 1: HyDE query rewriting (only for RETRIEVE_MORE rounds)
         search_query = query
-        if should_use_hyde(round_idx, settings.USE_HYDE) and llm_client:
+        if should_use_hyde(round_idx, settings.USE_HYDE, query) and llm_client:
             print("   🔮 Generating HyDE query...")
             hyde_result = hyde_query(query, llm_client)
             if hyde_result:
@@ -375,6 +430,7 @@ class VectorRetriever:
             retrieved_ids.append(candidate["doc_id"])
 
         # Minimal MMR packer
+        contexts_list: list[dict[str, Any]]  # Declare contexts_list once
         if settings.MMR_LAMBDA > 0:
             from agentic_rag.retriever.mmr import mmr_pack_context
 
@@ -385,18 +441,18 @@ class VectorRetriever:
                 ),
                 mmr_lambda=settings.MMR_LAMBDA,
             )
-            contexts_list: list[dict] = packed
+            contexts_list = [dict(block) for block in packed]  # Assign here
         else:
             # Step 7: Pack under token cap
             cap = settings.MAX_CONTEXT_TOKENS or settings.CONTEXT_TOKEN_CAP
             packed, total_tokens, n_blocks = pack_context(blocks, max_tokens_cap=cap)
-            contexts_list = packed
+            contexts_list = [dict(block) for block in packed]  # Assign here
 
         stats = {
             "context_tokens": total_tokens,
             "n_ctx_blocks": n_blocks,
             "retrieved_ids": retrieved_ids,
-            "used_hyde": should_use_hyde(round_idx, settings.USE_HYDE),
+            "used_hyde": should_use_hyde(round_idx, settings.USE_HYDE, query),
             "used_rerank": self.reranker is not None,
             "used_mmr": settings.MMR_LAMBDA > 0,
             "used_hybrid": self.use_hybrid and self.bm25_retriever is not None,

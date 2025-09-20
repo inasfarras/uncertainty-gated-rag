@@ -4,7 +4,9 @@ from agentic_rag.models.adapter import ChatMessage
 
 
 def build_reflect_prompt(
-    contexts: list[dict], original_answer: str
+    contexts: list[dict],
+    original_answer: str,
+    required_anchors: list[str] | None = None,
 ) -> tuple[list[ChatMessage], str]:
     """Builds a REFLECT prompt to repair a poor answer."""
     context_str = "\n\n".join([f"CTX[{c['id']}]:\n{c['text']}" for c in contexts])
@@ -18,16 +20,19 @@ def build_reflect_prompt(
         "2.  If a sentence is fully supported, keep it and its citation.\n"
         "3.  If a sentence is partially supported, rewrite it to be fully supported by the CONTEXT.\n"
         "4.  If a sentence is not supported at all, REMOVE it.\n"
-        "5.  If, after removing all unsupported sentences, the answer is empty or does not address the question, output EXACTLY: I don't know.\n"
+        "5.  If the question implies REQUIRED ANCHORS (e.g., year/window, unit, event/category) and these are missing from the cited CONTEXT, do not assert. Prefer to revise conservatively.\n"
+        "6.  If, after removing all unsupported sentences, the answer is empty or does not address the question, output EXACTLY: I don't know.\n"
         "6.  Do NOT add any new information that is not in the CONTEXT.\n"
         "7.  Preserve the original citation format [CIT:<doc_id>] for all supported claims."
     )
 
-    user_content = (
-        f"CONTEXT:\n{context_str}\n\n"
-        f"ORIGINAL ANSWER:\n{original_answer}\n\n"
-        f"CORRECTED ANSWER:"
+    anchors_note = (
+        "\nREQUIRED ANCHORS:\n- " + "\n- ".join(required_anchors) + "\n"
+        if required_anchors
+        else "\n"
     )
+
+    user_content = f"CONTEXT:\n{context_str}{anchors_note}\nORIGINAL ANSWER:\n{original_answer}\n\nCORRECTED ANSWER:"
 
     debug_prompt = f"SYSTEM:\n{system_content}\n\n{user_content}"
     return [
