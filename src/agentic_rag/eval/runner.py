@@ -20,6 +20,50 @@ from agentic_rag.eval.signals import (
 )
 from agentic_rag.supervisor.orchestrator import AnchorSystem
 
+# Built-in lightweight profiles to shorten long commands
+PROFILES: dict[str, dict[str, Any]] = {
+    # Balanced quality/speed for AnchorSystem
+    "anchor_balanced": {
+        "system": "anchor",
+        "gate_on": True,
+        "max_rounds": 2,
+        "judge_policy": "gray_zone",
+        # Keep backend unchanged by default; user can pass --backend
+        "overrides": (
+            "USE_HYBRID_SEARCH=False "
+            "RETRIEVAL_K=8 PROBE_FACTOR=1 RETRIEVAL_POOL_K=24 "
+            "MAX_CONTEXT_TOKENS=1100 MAX_OUTPUT_TOKENS=90 "
+            "MMR_LAMBDA=0.0 MAX_WORKERS=6"
+        ),
+    },
+    # Fastest single-round factoid-style pass
+    "anchor_fast": {
+        "system": "anchor",
+        "gate_on": True,
+        "max_rounds": 1,
+        "judge_policy": "never",
+        "overrides": (
+            "USE_HYBRID_SEARCH=False "
+            "RETRIEVAL_K=8 PROBE_FACTOR=1 RETRIEVAL_POOL_K=16 "
+            "MAX_CONTEXT_TOKENS=900 MAX_OUTPUT_TOKENS=60 "
+            "MMR_LAMBDA=0.0"
+        ),
+    },
+    # Minimal hybrid (vector+BM25) at small pool sizes
+    "anchor_hybrid_light": {
+        "system": "anchor",
+        "gate_on": True,
+        "max_rounds": 2,
+        "judge_policy": "gray_zone",
+        "overrides": (
+            "USE_HYBRID_SEARCH=True HYBRID_ALPHA=0.7 "
+            "RETRIEVAL_K=8 PROBE_FACTOR=1 RETRIEVAL_POOL_K=24 "
+            "MAX_CONTEXT_TOKENS=1100 MAX_OUTPUT_TOKENS=90 "
+            "MMR_LAMBDA=0.0"
+        ),
+    },
+}
+
 # Helper functions for runner
 _IDK_PAT = re.compile(r"^i\s*do?n'?t\s*know\.?$")
 
@@ -118,6 +162,22 @@ _override_option = typer.Option(
     show_default=False,
 )
 
+# Optional file with KEY=VAL overrides, one per line (comments with #)
+_override_file_option = typer.Option(
+    None,
+    "--override-file",
+    help="Path to file with KEY=VAL overrides (one per line)",
+    show_default=False,
+)
+
+# Named profile to shorten commands
+_profile_option = typer.Option(
+    None,
+    "--profile",
+    help="Named profile: anchor_fast | anchor_balanced | anchor_hybrid_light",
+    case_sensitive=False,
+)
+
 
 @app.command()
 def run(
@@ -138,6 +198,8 @@ def run(
     epsilon_overlap: float = _eps_overlap_option,
     use_final_short: bool = _use_final_short_option,
     override: Optional[list[str]] = _override_option,
+    override_file: Optional[Path] = _override_file_option,
+    profile: Optional[str] = _profile_option,
     # gate_kind removed - only UncertaintyGate available
 ):
     """Runs an evaluation of the Agentic RAG system."""
@@ -153,7 +215,29 @@ def run(
     settings.EPSILON_OVERLAP = epsilon_overlap
     settings.USE_FINAL_SHORT_SCORING = bool(use_final_short)
 
-    # Apply generic overrides
+    # Apply profile (if any) to set defaults and append overrides
+    if profile:
+        prof = PROFILES.get(profile.lower())
+        if not prof:
+            console.print(
+                f"[bold red]Unknown profile: {profile}. Choose from: {', '.join(PROFILES)}[/bold red]"
+            )
+            raise typer.Exit(1)
+        # Enforce intended system for the profile
+        if prof.get("system") and system != prof["system"]:
+            console.print(
+                f"[yellow]Profile '{profile}' is designed for system '{prof['system']}'. Overriding system.[/yellow]"
+            )
+            system = prof["system"]
+        # Apply profile-level flags
+        gate_on = bool(prof.get("gate_on", gate_on))
+        max_rounds = int(prof.get("max_rounds", max_rounds or settings.MAX_ROUNDS))
+        judge_policy = str(prof.get("judge_policy", judge_policy))
+        # Append profile overrides
+        if prof.get("overrides"):
+            override = list(override or []) + [str(prof["overrides"])]
+
+    # Apply generic overrides (CLI and/or file)
     def _coerce(v: str):
         vl = v.strip()
         if vl.lower() in {"true", "false"}:
@@ -164,6 +248,20 @@ def run(
             return int(vl)
         except Exception:
             return vl
+
+    # Load override file if provided
+    if override_file and override_file.exists():
+        try:
+            lines = []
+            for raw in override_file.read_text(encoding="utf-8").splitlines():
+                s = raw.strip()
+                if not s or s.startswith("#"):
+                    continue
+                lines.append(s)
+            if lines:
+                override = list(override or []) + [" ".join(lines)]
+        except Exception:
+            pass
 
     if override:
         # Support space-separated list or repeated flags
