@@ -26,12 +26,12 @@ class Settings(BaseSettings):
     # Max tokens the model can generate
     MAX_OUTPUT_TOKENS: int = 160
     # Loop controls
-    MAX_ROUNDS: int = 2
+    MAX_ROUNDS: int = 1
     RETRIEVAL_K: int = 8
     PROBE_FACTOR: int = 4
     GRAPH_K: int = 20
     FAITHFULNESS_TAU: float = 0.65
-    OVERLAP_TAU: float = 0.40
+    OVERLAP_TAU: float = 0.42
     OVERLAP_SIM_TAU: float = 0.60
     UNCERTAINTY_TAU: float = 0.50
     # Enhanced gate settings
@@ -42,19 +42,22 @@ class Settings(BaseSettings):
     TAU_HI: float = 0.60
     EPSILON_OVERLAP: float = 0.02
     LOW_BUDGET_TOKENS: int = 500
-    USE_RERANK: bool = True
+    USE_RERANK: bool = False
     RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
-    USE_HYDE: bool = True
-    MMR_LAMBDA: float = 0.4
-    RETRIEVAL_POOL_K: int = 50
+    USE_HYDE: bool = False
+    MMR_LAMBDA: float = 0.45
+    RETRIEVAL_POOL_K: int = 24
     # Hybrid search combining vector and BM25
     USE_HYBRID_SEARCH: bool = True
     HYBRID_ALPHA: float = 0.7  # Weight for vector vs BM25 (0.7 = 70% vector, 30% BM25)
     ANCHOR_BONUS: float = 0.07  # Score bonus for candidates containing question anchors
+    # Lean-agent controls
+    FACTOID_ONE_SHOT_RETRIEVAL: bool = True
+    FACTOID_MIN_TOKENS_LEFT: int = 300
+    USE_FACTOID_FINALIZER: bool = True
     # Judge policy for RAGAS invocation in agent loop: never | gray_zone | always
-    JUDGE_POLICY: Literal["never", "gray_zone", "always"] = (
-        "always"  # Enable judge by default
-    )
+    JUDGE_POLICY: Literal["never", "gray_zone", "always"] = "gray_zone"
+    JUDGE_MAX_CALLS_PER_Q: int = 1
     # Judge timing & thresholds
     JUDGE_PREGEN: bool = True  # Run Judge before generation
     JUDGE_MIN_CONF_FOR_STOP: float = 0.8  # Require judge OK at/above this to early STOP
@@ -64,19 +67,38 @@ class Settings(BaseSettings):
     # Context quality thresholds
     ANCHOR_COVERAGE_TAU: float = 0.6  # Min anchor coverage for sufficiency
     CONFLICT_RISK_TAU: float = 0.25  # Above this, treat as insufficient
+    # Anchor orchestrator thresholds
+    NEW_HITS_EPS: float = 0.15  # Min ratio of new docs to continue
+    FINE_FILTER_TAU: float = 0.15  # Min median fine score to keep exploring
+    ANCHOR_PLATEAU_EPS: float = 0.05  # Min coverage gain between rounds
+    MAX_WORKERS: int = 4  # Parallel anchor workers
+    # Packing reserves: force-include anchor-bearing contexts when coverage is low
+    RESERVE_ANCHOR_SLOTS: int = 2
+    PACK_RESERVE_ON_LOW_COVERAGE: bool = True
+    # Meta-aware pack fusion weights (final = w_fine*fine_sim + w_title*title_match + w_rank*rank_score)
+    PACK_W_FINE: float = 0.90
+    PACK_W_TITLE: float = 0.05
+    PACK_W_RANK: float = 0.05
+    # Per-domain cap in pack (to widen coverage)
+    PACK_MAX_PER_DOMAIN: int = 2
+    # Doc-level cap when list-like query
+    PACK_MAX_PER_DOC_LIST: int = 2
+    # Type-aware budgets (optional): overrides for list/factoid types
+    LIST_CAP_TOKENS: int = 900
+    FACTOID_CAP_TOKENS: int = 850
+    LIST_RESERVE_SLOTS: int = 3
+    FACTOID_RESERVE_SLOTS: int = 2
 
     # Scoring/analysis toggles
-    USE_FINAL_SHORT_SCORING: bool = (
-        False  # If True, runner will prefer best-of (final_short vs full)
-    )
+    USE_FINAL_SHORT_SCORING: bool = True
     FINAL_SHORT_ALLOW_ENTITY: bool = (
         False  # If True, entity extraction used in final_short
     )
 
     # Removed GATE_KIND - only UncertaintyGate is available
 
-    LOG_DIR: str = "logs"
-    LOG_LEVEL: str = "INFO"
+    log_dir: str = "logs"
+    log_level: str = "INFO"
 
     class Config:
         env_file = ".env"

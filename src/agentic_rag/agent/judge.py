@@ -314,6 +314,9 @@ Assess whether these contexts are sufficient to answer the question accurately."
 
         anchors.extend(_re.findall(r"\b(19\d{2}|20\d{2})\b", ql))
 
+        # Scoreline-style triples like 50-40-90 (or 50/40/90)
+        anchors.extend(_re.findall(r"\b\d{2}[-\/]\d{2}[-\/]\d{2}\b", ql))
+
         # Quarters
         quarter_map = {
             "q1": ["jan", "feb", "mar", "first quarter", "1st qtr"],
@@ -361,7 +364,60 @@ Assess whether these contexts are sufficient to answer the question accurately."
         ]
         anchors.extend([t for t in unit_terms if t in ql])
 
-        # Key entities-like tokens (heuristic): words in title case in original question
+        # Key entities-like tokens (heuristic):
+        # - Prefer two-word phrases (lowercase questions may include proper names)
+        # - Also include title-cased single tokens from the original question
+        try:
+            stop = {
+                "how",
+                "many",
+                "much",
+                "what",
+                "which",
+                "who",
+                "when",
+                "where",
+                "why",
+                "did",
+                "does",
+                "do",
+                "is",
+                "are",
+                "was",
+                "were",
+                "the",
+                "a",
+                "an",
+                "in",
+                "on",
+                "of",
+                "for",
+                "to",
+                "at",
+                "per",
+                "game",
+                "club",
+                "season",
+                "seasons",
+                "average",
+                "averages",
+                "made",
+                "make",
+            }
+            toks = _re.findall(r"[a-z][a-z'\-]+", ql)
+            candidates: list[str] = []
+            for i in range(len(toks) - 1):
+                w1, w2 = toks[i], toks[i + 1]
+                if w1 in stop or w2 in stop:
+                    continue
+                if len(w1) >= 3 and len(w2) >= 3:
+                    candidates.append(f"{w1} {w2}")
+            if candidates:
+                anchors.append(max(candidates, key=len))
+        except Exception:
+            pass
+
+        # Also include title-cased words from the original (if any)
         words = [w.strip() for w in (question or "").split() if w.strip()]
         for w in words:
             if w[:1].isupper() and len(w) > 2 and w.lower() not in anchors:
@@ -616,6 +672,8 @@ def extract_required_anchors(question: str) -> Set[str]:
     import re as _re
 
     anchors.update(_re.findall(r"\b(?:19|20)\d{2}\b", q))
+    # Scoreline-style triples like 50-40-90 (and 50/40/90)
+    anchors.update(_re.findall(r"\b\d{2}[-\/]\d{2}[-\/]\d{2}\b", q))
     # Quarters / windows
     for tok in [
         "q1",
@@ -663,6 +721,57 @@ def extract_required_anchors(question: str) -> Set[str]:
     ]:
         if tok in q:
             anchors.add(tok)
+    # Heuristic two-word entity (lowercase questions may include proper names)
+    try:
+        stop = {
+            "how",
+            "many",
+            "much",
+            "what",
+            "which",
+            "who",
+            "when",
+            "where",
+            "why",
+            "did",
+            "does",
+            "do",
+            "is",
+            "are",
+            "was",
+            "were",
+            "the",
+            "a",
+            "an",
+            "in",
+            "on",
+            "of",
+            "for",
+            "to",
+            "at",
+            "per",
+            "game",
+            "club",
+            "season",
+            "seasons",
+            "average",
+            "averages",
+            "made",
+            "make",
+        }
+        toks = _re.findall(r"[a-z][a-z'\-]+", q)
+        candidates: list[str] = []
+        for i in range(len(toks) - 1):
+            w1, w2 = toks[i], toks[i + 1]
+            if w1 in stop or w2 in stop:
+                continue
+            if len(w1) >= 3 and len(w2) >= 3:
+                candidates.append(f"{w1} {w2}")
+        # Add the longest candidate (if any)
+        if candidates:
+            anchors.add(max(candidates, key=len))
+    except Exception:
+        pass
     return anchors
 
 

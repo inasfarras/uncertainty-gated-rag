@@ -13,7 +13,7 @@ def _encoding():
         return tiktoken.get_encoding("cl100k_base")
 
 
-def chunk_text(text: str, max_tokens: int = 600, overlap: int = 100) -> list[str]:
+def chunk_text(text: str, max_tokens: int = 300, overlap: int = 50) -> list[str]:
     enc = _encoding()
     tokens = enc.encode(text or "")
     chunks = []

@@ -4,13 +4,33 @@ from agentic_rag.eval.metrics import extract_short_answer  # may be used as fall
 
 
 def detect_type(question: str) -> str:
+    """Heuristically detect the expected answer type.
+
+    Prioritize entity-type questions that begin with which/who/what-entity
+    even if the question also contains a year. This avoids extracting a year
+    as the short answer for prompts like "Which film ... in 2021?".
+    """
     q = (question or "").lower()
-    if re.search(r"\bwhen\b|\bdate\b|\bq\d\s*20\d{2}\b|\b20\d{2}\b", q):
-        return "date"
-    if re.search(r"\bhow many\b|\bhow long\b|\baverage\b|%|\bper game\b|\$\d", q):
-        return "number"
-    if re.search(r"\bwhich\b|\bwho\b|\bwhat (movie|film|team|player|country)\b", q):
+
+    # Cues
+    has_entity_cue = bool(
+        re.search(r"\bwhich\b|\bwho\b|\bwhat (movie|film|team|player|country|album|song)\b", q)
+    )
+    has_number_cue = bool(
+        re.search(r"\bhow many\b|\bhow long\b|\baverage\b|%|\bper game\b|\$\d", q)
+    )
+    has_date_cue = bool(
+        re.search(r"\bwhen\b|\bdate\b|\bq\d\s*20\d{2}\b", q)
+        or re.search(r"\b(19|20)\d{2}\b", q)
+    )
+
+    # Prefer entity over date when both cues are present
+    if has_entity_cue:
         return "entity"
+    if has_number_cue:
+        return "number"
+    if has_date_cue:
+        return "date"
     return "other"
 
 
@@ -43,6 +63,17 @@ def finalize_short_answer(question: str, answer: str) -> str | None:
             return m.group(0).strip()
 
     if qtype == "number":
+        # Prefer approximate currency for aggregates (avg/sum)
+        # 1) If ada frasa approx (~, approximately, about), ambil currency yang diawali ~ atau berada setelah kata approx
+        approx = re.search(r"(~\$[\d,]+(?:\.\d+)?|approximately\s+\$[\d,]+(?:\.\d+)?|about\s+\$[\d,]+(?:\.\d+)?)", a, re.I)
+        if approx:
+            return approx.group(0).strip()
+        # 2) Jika pertanyaan mengandung kata 'average', ambil currency terakhir pada jawaban (bias untuk hasil agregat)
+        if "average" in (question or "").lower():
+            monies = list(re.finditer(r"\$[\d,]+(?:\.\d+)?", a))
+            if monies:
+                return monies[-1].group(0).strip()
+        # 3) Fallback ke currency pertama atau angka umum
         m = _MONEY.search(a) or _NUM.search(a)
         if m:
             return m.group(0).strip()

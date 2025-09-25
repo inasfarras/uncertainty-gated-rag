@@ -15,6 +15,7 @@ This document details the mechanism behind the key evaluation metrics used in th
     3.  A **cosine similarity** check is performed between the sentence embedding and the cited context's embedding.
     4.  The final score is the ratio of supported sentences to the total number of sentences.
     \[ \text{Overlap} = \frac{\text{Number of Supported Sentences}}{\text{Total Number of Sentences}} \]
+-   **Interpretation**: A high overlap (e.g., 1.0) indicates that the answer's claims are strongly supported by the retrieved context. This can be high even if Exact Match (EM) or F1 Score is low, because overlap focuses on contextual grounding rather than lexical identity to the gold answer.
 
 ### Faithfulness (`final_f`)
 -   **What it Measures**: The factual accuracy of the answer **based on the provided context**.

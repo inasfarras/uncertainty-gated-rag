@@ -27,6 +27,11 @@ try:
 except LookupError:
     nltk.download("stopwords")
 
+try:
+    nltk.data.find("tokenizers/punkt_tab")
+except LookupError:
+    nltk.download("punkt_tab")
+
 
 class BM25Retriever:
     """
@@ -49,7 +54,8 @@ class BM25Retriever:
         """
         self.k1 = k1
         self.b = b
-        self.corpus: List[str] = []
+        # List of token lists; each entry is the tokenized document
+        self.corpus: List[List[str]] = []
         self.doc_ids: List[str] = []
         self.doc_freqs: Dict[str, int] = {}
         self.idf_cache: Dict[str, float] = {}
@@ -57,6 +63,8 @@ class BM25Retriever:
         self.avg_doc_length: float = 0.0
         self.corpus_size: int = 0
         self.stop_words = set(stopwords.words("english"))
+        # Schema/version tracking for safe loading
+        self.schema_version: int = 2  # current schema stores token lists in corpus
 
     def build_index(self, documents: List[Dict[str, str]]) -> None:
         """
@@ -76,7 +84,7 @@ class BM25Retriever:
 
             # Tokenize and filter
             tokens = self._tokenize(text)
-            self.corpus.append(" ".join(tokens))
+            self.corpus.append(tokens) # Store tokens as a list
             self.doc_ids.append(doc_id)
             self.doc_lengths.append(len(tokens))
 
@@ -85,9 +93,8 @@ class BM25Retriever:
 
         # Build document frequency counts
         self.doc_freqs = defaultdict(int)
-        for doc_text in self.corpus:
-            unique_tokens = set(self._tokenize(doc_text))
-            for token in unique_tokens:
+        for doc_tokens_list in self.corpus: # Iterate over the list of tokens
+            for token in set(doc_tokens_list): # Use the already tokenized list
                 self.doc_freqs[token] += 1
 
         # Pre-compute IDF values for common terms
@@ -96,23 +103,23 @@ class BM25Retriever:
     def _tokenize(self, text: str) -> List[str]:
         """Tokenize text and remove stopwords."""
         try:
-            tokens = word_tokenize(text.lower())
+            raw_tokens = word_tokenize(text.lower())
             # Filter out stopwords and non-alphabetic tokens
             tokens = [
                 token
-                for token in tokens
-                if token.isalnum() and token not in self.stop_words and len(token) > 1
+                for token in raw_tokens
+                if (token.isascii() and any(c.isalnum() for c in token)) and token not in self.stop_words and len(token) > 1
             ]
             return tokens
         except Exception:
             # Fallback tokenization
-            return [
+            tokens = [
                 word.lower()
                 for word in text.split()
-                if word.isalnum()
-                and len(word) > 1
+                if (word.isascii() and any(c.isalnum() for c in word)) and len(word) > 1
                 and word.lower() not in self.stop_words
             ]
+            return tokens
 
     def _compute_idf_cache(self) -> None:
         """Pre-compute IDF values for frequent terms."""
@@ -160,7 +167,6 @@ class BM25Retriever:
                 )
 
                 score += idf * (numerator / denominator)
-
         return score
 
     def search(self, query: str, k: int = 10) -> List[Tuple[str, float]]:
@@ -185,10 +191,9 @@ class BM25Retriever:
         scores = []
         for doc_idx in range(self.corpus_size):
             score = self._score_document(query_terms, doc_idx)
-            if score > 0:  # Only include documents with positive scores
-                scores.append((self.doc_ids[doc_idx], score))
+            scores.append((self.doc_ids[doc_idx], score))
 
-        # Sort by score and return top-k
+        # Sort by score and return top-k (include zeros for diagnostic/recall)
         scores.sort(key=lambda x: x[1], reverse=True)
         return scores[:k]
 
@@ -204,6 +209,7 @@ class BM25Retriever:
             "doc_lengths": self.doc_lengths,
             "avg_doc_length": self.avg_doc_length,
             "corpus_size": self.corpus_size,
+            "schema_version": self.schema_version,
         }
 
         with open(index_path, "wb") as f:
@@ -223,6 +229,30 @@ class BM25Retriever:
         self.doc_lengths = index_data["doc_lengths"]
         self.avg_doc_length = index_data["avg_doc_length"]
         self.corpus_size = index_data["corpus_size"]
+        self.schema_version = int(index_data.get("schema_version", 1))
+
+    def is_schema_compatible(self) -> bool:
+        """Return True if the loaded index matches current expectations.
+
+        Current schema requires:
+        - schema_version >= 2
+        - corpus is a list of token lists (first element is a list)
+        - lengths consistent
+        """
+        try:
+            if int(self.schema_version) < 2:
+                return False
+            if not isinstance(self.corpus, list):
+                return False
+            if len(self.corpus) == 0:
+                return True  # empty but OK
+            if not isinstance(self.corpus[0], list):
+                return False
+            if len(self.doc_ids) != len(self.corpus) or len(self.doc_lengths) != len(self.corpus):
+                return False
+            return True
+        except Exception:
+            return False
 
 
 class HybridRetriever:

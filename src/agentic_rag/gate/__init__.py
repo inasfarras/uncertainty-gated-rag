@@ -1,0 +1,2 @@
+"""BAUG adapter package."""
+

@@ -7,6 +7,11 @@ import numpy as np
 import typer
 
 from agentic_rag.agent import finalize as finalize_utils
+from agentic_rag.agent.qanchors import (
+    extract_required_anchors as q_extract_required_anchors,
+    anchors_present_in_texts as q_anchors_present_in_texts,
+    is_factoid as q_is_factoid,
+)
 from agentic_rag.agent.gate import GateAction, GateSignals, make_gate
 from agentic_rag.agent.judge import (
     anchors_present_in_texts,
@@ -434,7 +439,11 @@ class BaseAgent:
         self.debug_mode = debug_mode
         self.retriever = VectorRetriever(settings.FAISS_INDEX_PATH)
         self.llm = OpenAIAdapter()
-        self.log_dir = Path("logs")
+        # Use configurable log directory
+        # Prefer new lowercase setting; fallback to legacy uppercase; then default
+        self.log_dir = Path(
+            (getattr(settings, "log_dir", None) or getattr(settings, "LOG_DIR", None) or "logs")
+        )
         self.log_dir.mkdir(exist_ok=True)
 
     def _log_jsonl(self, data: Dict[str, Any], log_path: Path):
@@ -444,6 +453,22 @@ class BaseAgent:
 
 class Baseline(BaseAgent):
     def __init__(self, debug_mode: bool = False):
+        # Enforce a "vanilla" baseline configuration:
+        # - FAISS-only (no hybrid BM25), no rerank, no MMR diversification
+        # - Small probe factor so retrieval pool ~= top_k
+        # - Keep k=8 and ~1k context cap
+        try:
+            settings.USE_RERANK = False
+            settings.MMR_LAMBDA = 0.0
+            settings.USE_HYBRID_SEARCH = False
+            settings.PROBE_FACTOR = 1
+            settings.RETRIEVAL_K = 8
+            # Clamp to a ~1k cap to ensure comparable packing
+            settings.MAX_CONTEXT_TOKENS = 1000
+        except Exception:
+            # If settings is immutable for any reason, proceed with defaults
+            pass
+
         super().__init__(system="baseline", debug_mode=debug_mode)
 
     def answer(self, question: str, qid: str | None = None) -> Dict[str, Any]:
@@ -1050,12 +1075,13 @@ class Agent(BaseAgent):
                     if "cache_hit_rate" in gate_extras:
                         print(f"💾 Cache hit rate: {gate_extras['cache_hit_rate']:.2f}")
 
-            # If about to STOP or ABSTAIN on a factoid with missing anchors, try one anchor-constrained retrieval
+            # If about to STOP or ABSTAIN on a factoid with missing anchors, optionally try one anchor-constrained retrieval
             used_anchor_constrained_search = False
             if (
                 action in (GateAction.STOP, GateAction.ABSTAIN)
-                and tokens_left >= 300
-                and qtype in ("date", "number", "entity")
+                and getattr(settings, "FACTOID_ONE_SHOT_RETRIEVAL", True)
+                and tokens_left >= getattr(settings, "FACTOID_MIN_TOKENS_LEFT", 300)
+                and (q_is_factoid(question) or qtype in ("date", "number", "entity"))
             ):
                 fail_time = gate_extras.get("fail_time", False)
                 fail_unit = gate_extras.get("fail_unit", False)
@@ -1063,8 +1089,17 @@ class Agent(BaseAgent):
                 cov = float(gate_extras.get("anchor_coverage", 1.0) or 1.0)
                 if fail_time or fail_unit or fail_event or cov < 0.5:
                     new_query = question
+                    # Recompute anchors using lean helpers for robustness
+                    try:
+                        required_anchors = list(q_extract_required_anchors(question))
+                        present_set = q_anchors_present_in_texts(
+                            [c["text"] for c in contexts], set(required_anchors)
+                        )
+                        anchor_missing = sorted(list(set(required_anchors) - present_set))
+                    except Exception:
+                        pass
                     if anchor_missing:
-                        new_query = question + " " + " ".join(anchor_missing[:4])
+                        new_query = question + " " + " ".join(sorted(anchor_missing)[:4])
                     print(
                         f"🧲 Anchor-constrained retrieval: missing={anchor_missing[:4]} (cov={cov:.2f})"
                     )
@@ -1131,6 +1166,68 @@ class Agent(BaseAgent):
                             else GateAction.RETRIEVE_MORE
                         )
 
+            # Final-round safeguard: if gate says RETRIEVE_MORE on last round, attempt one anchor-constrained rescue
+            if (
+                action == GateAction.RETRIEVE_MORE
+                and r == settings.MAX_ROUNDS
+                and getattr(settings, "FACTOID_ONE_SHOT_RETRIEVAL", True)
+                and tokens_left >= getattr(settings, "FACTOID_MIN_TOKENS_LEFT", 300)
+                and (q_is_factoid(question) or qtype in ("date", "number", "entity"))
+            ):
+                try:
+                    rq = list(q_extract_required_anchors(question))
+                    ctx_txt = [c["text"] for c in contexts]
+                    present = q_anchors_present_in_texts(ctx_txt, set(rq))
+                    miss = sorted(list(set(rq) - set(present)))
+                except Exception:
+                    miss = []
+                if miss:
+                    print(
+                        f"⏳ Final-round rescue: trying anchor-constrained retrieval (missing={miss[:4]})"
+                    )
+                    new_query = question + " " + " ".join(miss[:4])
+                    transform_contexts, transform_stats = self.retriever.retrieve_pack(
+                        new_query,
+                        k=k,
+                        exclude_doc_ids=seen_doc_ids,
+                        probe_factor=settings.PROBE_FACTOR,
+                        round_idx=r,
+                        llm_client=self.llm,
+                    )
+                    contexts = transform_contexts[: max(2, min(4, len(transform_contexts)))] or contexts
+                    context_ids = [c["id"] for c in contexts]
+                    context_texts = [c["text"] for c in contexts]
+                    prompt, debug_prompt = build_prompt(contexts, question)
+                    with timer() as t2:
+                        draft, usage = self.llm.chat(
+                            messages=prompt,
+                            max_tokens=settings.MAX_OUTPUT_TOKENS,
+                            temperature=settings.TEMPERATURE,
+                        )
+                    latency_ms = t2()
+                    latencies.append(latency_ms)
+                    total_tokens += usage["total_tokens"]
+                    tokens_left -= usage["total_tokens"]
+                    if _should_force_idk(question, context_texts):
+                        draft = "I don't know"
+                    draft = _normalize_answer(draft, context_ids)
+                    sup = sentence_support(
+                        draft,
+                        {i: t for i, t in zip(context_ids, context_texts)},
+                        tau_sim=settings.OVERLAP_SIM_TAU,
+                    )
+                    o = float(sup.get("overlap", 0.0))
+                    f = faith_ragas if faith_ragas is not None else min(1.0, 0.6 + 0.4 * o)
+                    action = (
+                        GateAction.STOP
+                        if (f >= settings.FAITHFULNESS_TAU and o >= settings.OVERLAP_TAU)
+                        else GateAction.ABSTAIN
+                    )
+                    used_anchor_constrained_search = True
+                    print(
+                        f"⏹️  Final-round decision after anchor search: {action} (f={f:.3f}, o={o:.3f})"
+                    )
+
             # Handle REFLECT action
             if should_reflect(action, has_reflect_left):
                 print("🤔 Applying REFLECT to improve answer...")
@@ -1192,6 +1289,9 @@ class Agent(BaseAgent):
                     "semantic_coherence": semantic_coherence,
                     "question_complexity": question_complexity,
                     "adaptive_weights": gate_extras.get("adaptive_weights"),
+                    "required_anchors": required_anchors,
+                    "present_anchor_rate": anchor_cov,
+                    "missing_anchors": anchor_missing,
                 }
                 self._log_jsonl(reflect_log, log_path)
 

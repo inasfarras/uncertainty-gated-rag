@@ -59,8 +59,9 @@ def build_system_instructions() -> str:
     return (
         "You answer ONLY using the provided CONTEXT.\n"
         "If information is missing, answer EXACTLY: I don't know.\n"
-        "Each non-IDK sentence that contains a claim MUST include exactly one citation in the form [CIT:<doc_id>].\n"
+        "Limit your answer to 1–2 sentences.\n"
+        "Each non-IDK sentence MUST include exactly one citation in the form [CIT:<doc_id>].\n"
         "If you answer I don't know (or Tidak tahu), do not include any citation.\n"
         "Citation format must be exactly [CIT:<doc_id>] where <doc_id> matches the CTX header and uses only letters, digits, _, or -.\n"
-        "Keep answers concise and factual."
+        "Be precise and concise; avoid extra sentences."
     )

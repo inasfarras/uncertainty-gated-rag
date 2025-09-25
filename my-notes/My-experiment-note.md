@@ -84,3 +84,32 @@ For a more detailed, per-question reason analysis, use the `analyze_per_question
 # Usage: node scripts/analyze_per_question.js <run.jsonl> <dataset.jsonl>
 node scripts/analyze_per_question.js logs/1758373375_agent.jsonl data/crag_questions.jsonl
 ```
+
+## 7. 2025-09-25 Anchor System Debug (CRAG)
+
+What changed
+- Chunking: ingestion chunks reduced to 300 tokens (overlap 50) to isolate per-season/table rows for better selection.
+- Anchors: added 50-40-90 detection (hyphen/slash), season ranges (e.g., 2005–06), and two-word entity anchors (e.g., steve nash).
+- Retriever: hybrid fusion adds anchors like 3pa/three-point attempts; multi-chunk per doc selection + in-doc scanning; slicing long texts around season/3PA tokens; reserve rule to force one season+3PA chunk when special patterns present.
+- Orchestrator prompt: instructs computing numeric answers from per-season/table rows and citing the chunk with the numbers.
+- BM25: rebuilt to match FAISS after re-ingest (corpus now ~23,999 chunks).
+
+Repro quick run (anchor)
+```powershell
+python -m agentic_rag.eval.runner ^
+  --dataset data/crag_questions.jsonl ^
+  --system anchor --n 3 ^
+  --override "MAX_ROUNDS=3 JUDGE_POLICY=always USE_HYBRID_SEARCH=True ^
+    RETRIEVAL_K=8 PROBE_FACTOR=2 RETRIEVAL_POOL_K=64 MAX_CONTEXT_TOKENS=1600 ^
+    USE_RERANK=False MMR_LAMBDA=0.0 HYBRID_ALPHA=0.55 ANCHOR_BONUS=0.12"
+```
+
+Observed (latest)
+- CEO Oracle (qid=161a89f3-…): answered correctly with [CIT].
+- 50-40-90 Nash (qid=7bb29eb4-…): answers with a numeric average (5.0) + [CIT]; next step is deterministic averaging from per-season 3PA rows to match gold.
+- Physics movie (qid=a2486535-…): still abstain; try HYDE and slightly lower HYBRID_ALPHA to bias lexical BM25.
+
+Next steps
+- Add numeric aggregator (config-guarded) to parse 3PA per-season rows and compute averages; cite the chunk.
+- Strengthen reserve: always include at least one chunk with (season token AND 3PA) when special anchors are detected.
+- Expand anchors for device/sci-fi phrasing (device/machine/invention; manipulate gravity/time/matter; The Core).

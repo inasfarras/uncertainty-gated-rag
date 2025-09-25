@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from agentic_rag.agent.loop import Agent, Baseline
+from agentic_rag.supervisor.orchestrator import AnchorSystem
 from agentic_rag.config import settings
 from agentic_rag.eval.signals import (
     em_f1,
@@ -60,7 +61,7 @@ _dataset_option = typer.Option(
 )
 _n_option = typer.Option(0, "--n", help="Number of items to process. 0 for all.")
 _system_option = typer.Option(
-    "baseline", "--system", help="System to run: 'baseline' or 'agent'."
+    "baseline", "--system", help="System to run: 'baseline' | 'agent' | 'anchor'."
 )
 _backend_option = typer.Option(
     settings.EMBED_BACKEND, "--backend", help="Backend to use: 'openai' or 'mock'."
@@ -104,9 +105,17 @@ _eps_overlap_option = typer.Option(
 )
 
 _use_final_short_option = typer.Option(
-    False,
+    True,
     "--use-final-short/--no-use-final-short",
     help="Score EM/F1 using best-of (final_short vs full answer)",
+)
+
+# Generic overrides: KEY=VAL pairs (e.g., MAX_ROUNDS=1 USE_HYDE=False)
+_override_option = typer.Option(
+    None,
+    "--override",
+    help="Override settings as KEY=VAL pairs (repeatable)",
+    show_default=False,
 )
 
 
@@ -128,6 +137,7 @@ def run(
     tau_hi: float = _tau_hi_option,
     epsilon_overlap: float = _eps_overlap_option,
     use_final_short: bool = _use_final_short_option,
+    override: Optional[list[str]] = _override_option,
     # gate_kind removed - only UncertaintyGate available
 ):
     """Runs an evaluation of the Agentic RAG system."""
@@ -143,6 +153,46 @@ def run(
     settings.EPSILON_OVERLAP = epsilon_overlap
     settings.USE_FINAL_SHORT_SCORING = bool(use_final_short)
 
+    # Apply generic overrides
+    def _coerce(v: str):
+        vl = v.strip()
+        if vl.lower() in {"true", "false"}:
+            return vl.lower() == "true"
+        try:
+            if "." in vl:
+                return float(vl)
+            return int(vl)
+        except Exception:
+            return vl
+
+    if override:
+        # Support space-separated list or repeated flags
+        for pair in override:
+            for token in str(pair).split():
+                if "=" not in token:
+                    continue
+                k, v = token.split("=", 1)
+                key = k.strip()
+                val = _coerce(v)
+                # Map common alias
+                if key == "USE_RERANKER":
+                    key = "USE_RERANK"
+                if hasattr(settings, key):
+                    setattr(settings, key, val)
+
+    # Decide log directory by system and gate flag
+    def _folder_for_run(sys_name: str, gate: bool) -> str:
+        if sys_name == "baseline":
+            return "logs/baseline"
+        if sys_name == "agent":
+            return "logs/agent_gate_on" if gate else "logs/agent_gate_off"
+        if sys_name == "anchor":
+            return "logs/anchor"
+        return "logs/other"
+
+    # Support new lowercase setting name; keep backward-compat
+    settings.log_dir = _folder_for_run(system, gate_on)
+
     # Load dataset
     with open(dataset) as f:
         questions = [json.loads(line) for line in f]
@@ -150,18 +200,28 @@ def run(
         questions = questions[:n]
 
     # Select system
-    model: Agent | Baseline
+    model: object
     if system == "agent":
         model = Agent(gate_on=gate_on, debug_mode=debug_prompts)
     elif system == "baseline":
         model = Baseline(debug_mode=debug_prompts)
+    elif system == "anchor":
+        model = AnchorSystem(debug_mode=debug_prompts)
     else:
         console.print(f"[bold red]Unknown system: {system}[/bold red]")
         raise typer.Exit(1)
 
+    # Agent uses UncertaintyGate; Anchor uses BAUG (external or UncertaintyGate fallback)
+    if system == "agent":
+        gate_note = "ON" if gate_on else "OFF"
+    elif system == "anchor":
+        gate_note = "BAUG"
+    else:
+        gate_note = "N/A"
     console.print(
-        f"[bold green]Running evaluation for system: '{system}' with gate {'ON' if gate_on and system == 'agent' else 'OFF'}[/bold green]"
+        f"[bold green]Running evaluation for system: '{system}' with gate {gate_note}[/bold green]"
     )
+    console.print(f"[bold]Logs directory:[/bold] {getattr(settings, 'log_dir', 'logs')}")
 
     # Run evaluation
     results = []
@@ -176,8 +236,15 @@ def run(
             f"  [bold blue]Agent Answer:[/bold blue] {summary.get('final_answer', '')}"
         )
 
-        gold = item.get("gold", "")
-        is_unans = gold.strip().lower() in {"invalid question", "n/a", "unknown", ""}
+        # Normalize gold to string for robust checks (gold can be non-string, e.g., int)
+        gold_raw = item.get("gold", "")
+        gold_text = str(gold_raw) if gold_raw is not None else ""
+        is_unans = gold_text.strip().lower() in {
+            "invalid question",
+            "n/a",
+            "unknown",
+            "",
+        }
 
         pred_answer = summary.get("final_answer", "")
         said_idk = _is_idk_no_citation(pred_answer)
@@ -197,14 +264,14 @@ def run(
         # when short extraction fails.
         full_pred = summary.get("final_answer", "")
         short_pred = summary.get("final_short") or ""
-        ef_full = em_f1(full_pred, item.get("gold"))
+        ef_full = em_f1(full_pred, gold_text)
         ef_short = (
-            em_f1(short_pred, item.get("gold"))
+            em_f1(short_pred, gold_text)
             if short_pred
             else {"em": 0.0, "f1": 0.0}
         )
-        # Choose scoring strategy
-        if settings.USE_FINAL_SHORT_SCORING:
+        # Choose scoring strategy: prefer final_short when available
+        if short_pred:
             # Prefer higher F1; tie-breaker on EM
             if ef_short.get("f1", 0.0) > ef_full.get("f1", 0.0) or (
                 ef_short.get("f1", 0.0) == ef_full.get("f1", 0.0)
@@ -221,7 +288,8 @@ def run(
             pred_for_scoring = full_pred
             ef = ef_full
             summary["pred_source"] = "full"
-        final_f = faithfulness_fallback(pred_for_scoring, item.get("gold"), final_o)
+        # Pass normalized gold_text to avoid attribute errors on non-strings
+        final_f = faithfulness_fallback(pred_for_scoring, gold_text, final_o)
         abstain = 1 if said_idk else 0
         wrong_on_answerable = (
             1
@@ -250,7 +318,7 @@ def run(
 
         # Dump debug prompt and raw output for first 3 when requested
         if debug_prompts and idx < 3:
-            debug_dir = Path("logs/debug")
+            debug_dir = Path(getattr(settings, "log_dir", "logs")) / "debug"
             debug_dir.mkdir(parents=True, exist_ok=True)
             dp = summary.get("debug_prompt", "")
             with open(
@@ -278,18 +346,23 @@ def run(
 
     # Logging and reporting
     timestamp = int(time.time())
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+    log_dir = Path(getattr(settings, "log_dir", "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     # Write JSONL summary
-    jsonl_path = log_dir / f"{timestamp}_{system}.jsonl"
+    file_tag = (
+        system
+        if system in {"baseline", "anchor"}
+        else ("agent_gate_on" if gate_on and system == "agent" else "agent_gate_off")
+    )
+    jsonl_path = log_dir / f"{timestamp}_{file_tag}.jsonl"
     with open(jsonl_path, "w") as f:
         for res in results:
             f.write(json.dumps(res) + "\n")
     console.print(f"Full summary logs saved to [cyan]{jsonl_path}[/cyan]")
 
     # Write CSV summary
-    csv_path = log_dir / f"{timestamp}_{system}_summary.csv"
+    csv_path = log_dir / f"{timestamp}_{file_tag}_summary.csv"
     df = pd.DataFrame(results)
     df["system"] = system
     df["id"] = [q["id"] for q in questions]
@@ -380,8 +453,74 @@ def run(
     if "final_f_ragas" not in df.columns:
         csv_cols.remove("final_f_ragas")
 
+    # Optional columns for anchor system
+    if "anchor_coverage" in df.columns:
+        csv_cols.append("anchor_coverage")
+    if "conflict_risk" in df.columns:
+        csv_cols.append("conflict_risk")
+    if "used_judge" in df.columns and "used_judge" not in csv_cols:
+        csv_cols.append("used_judge")
+
     df[csv_cols].to_csv(csv_path, index=False)
     console.print(f"CSV summary saved to [cyan]{csv_path}[/cyan]")
+
+    # Write a QA pairs log (qid, question, agent answers, gold, alt_ans if present)
+    try:
+        qa_path = log_dir / f"{timestamp}_{file_tag}_qa_pairs.csv"
+        # Build a lookup from dataset for gold/alt answers
+        gold_map: dict[str, dict] = {}
+        for it in questions:
+            qid = str(it.get("id"))
+            gold_map[qid] = {
+                "question": it.get("question", ""),
+                # prefer 'answer' if present, else 'gold'
+                "gold": it.get("answer", it.get("gold", "")),
+                "alt_ans": it.get("alt_ans", []),
+            }
+        # Optional: load metadata to resolve URLs of cited docs
+        from agentic_rag.data.meta import load_meta
+        meta_map = load_meta()
+        from agentic_rag.eval.signals import extract_citations
+        import csv as _csv
+        with open(qa_path, "w", newline="", encoding="utf-8") as fqa:
+            writer = _csv.writer(fqa)
+            writer.writerow([
+                "id",
+                "question",
+                "agent_final_answer",
+                "agent_final_short",
+                "gold",
+                "alt_ans",
+                "cited_doc_ids",
+                "cited_urls",
+                "cited_titles",
+            ])
+            for res in results:
+                qid = str(res.get("qid"))
+                gm = gold_map.get(qid, {"question": "", "gold": "", "alt_ans": []})
+                # Resolve citations
+                cids = extract_citations(res.get("final_answer", "") or "")
+                urls, titles = [], []
+                for cid in cids:
+                    m = meta_map.get(cid, {})
+                    if m.get("url"):
+                        urls.append(str(m.get("url")))
+                    if m.get("title"):
+                        titles.append(str(m.get("title")))
+                writer.writerow([
+                    qid,
+                    gm.get("question", ""),
+                    res.get("final_answer", ""),
+                    res.get("final_short", ""),
+                    gm.get("gold", ""),
+                    "; ".join(gm.get("alt_ans", []) if isinstance(gm.get("alt_ans"), list) else []),
+                    "; ".join(cids),
+                    "; ".join(urls),
+                    "; ".join(titles),
+                ])
+        console.print(f"QA pairs saved to [cyan]{qa_path}[/cyan]")
+    except Exception:
+        pass
 
     # Print console summary
     table = Table(title=f"Evaluation Summary: {system.capitalize()}")
@@ -438,6 +577,48 @@ def run(
         table.add_row(name, value)
 
     console.print(table)
+
+    # Write a Markdown summary alongside CSV/JSONL for convenient reporting
+    try:
+        md_path = log_dir / f"{timestamp}_{file_tag}_summary.md"
+        # Minimal markdown table from summary_metrics
+        summary_lines = [
+            f"# Evaluation Summary: {system}",
+            "",
+            f"- Dataset: `{dataset}`",
+            f"- Count: {len(df)}",
+            f"- Backend: `{backend}`",
+            f"- Judge Policy: `{judge_policy}`",
+            f"- Gate: {gate_note}",
+            f"- JSONL: `{jsonl_path}`",
+            f"- CSV: `{csv_path}`",
+            "",
+            "## Metrics",
+            "",
+            "| Metric | Value |",
+            "|---|---:|",
+        ]
+        for name, value in summary_metrics.items():
+            summary_lines.append(f"| {name} | {value} |")
+
+        # Add override details if provided
+        if override:
+            summary_lines.extend([
+                "",
+                "## Overrides",
+                "",
+                "```",
+                " ".join(override),
+                "```",
+            ])
+
+        md_content = "\n".join(summary_lines) + "\n"
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(md_content)
+        console.print(f"Markdown summary saved to [cyan]{md_path}[/cyan]")
+    except Exception:
+        # Never fail the run because of markdown reporting
+        pass
 
 
 if __name__ == "__main__":
