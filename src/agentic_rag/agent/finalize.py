@@ -14,7 +14,9 @@ def detect_type(question: str) -> str:
 
     # Cues
     has_entity_cue = bool(
-        re.search(r"\bwhich\b|\bwho\b|\bwhat (movie|film|team|player|country|album|song)\b", q)
+        re.search(
+            r"\bwhich\b|\bwho\b|\bwhat (movie|film|team|player|country|album|song)\b", q
+        )
     )
     has_number_cue = bool(
         re.search(r"\bhow many\b|\bhow long\b|\baverage\b|%|\bper game\b|\$\d", q)
@@ -65,7 +67,11 @@ def finalize_short_answer(question: str, answer: str) -> str | None:
     if qtype == "number":
         # Prefer approximate currency for aggregates (avg/sum)
         # 1) If ada frasa approx (~, approximately, about), ambil currency yang diawali ~ atau berada setelah kata approx
-        approx = re.search(r"(~\$[\d,]+(?:\.\d+)?|approximately\s+\$[\d,]+(?:\.\d+)?|about\s+\$[\d,]+(?:\.\d+)?)", a, re.I)
+        approx = re.search(
+            r"(~\$[\d,]+(?:\.\d+)?|approximately\s+\$[\d,]+(?:\.\d+)?|about\s+\$[\d,]+(?:\.\d+)?)",
+            a,
+            re.I,
+        )
         if approx:
             return approx.group(0).strip()
         # 2) Jika pertanyaan mengandung kata 'average', ambil currency terakhir pada jawaban (bias untuk hasil agregat)

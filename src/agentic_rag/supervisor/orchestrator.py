@@ -1,22 +1,39 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set, Tuple, cast
 import re
-
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any
+from urllib.parse import urlparse
+
 import numpy as np
 
+from agentic_rag.agent.finalize import finalize_short_answer
+from agentic_rag.agent.judge import create_judge
 from agentic_rag.anchors.predictor import propose_anchors
 from agentic_rag.anchors.validators import (
-    coverage as anchor_coverage,
-    mismatch_flags as anchor_mismatch_flags,
-    conflict_risk as estimate_conflict_risk,
+    AWARD_TOKENS,
     award_tournament_requirements,
     units_time_requirements,
-    AWARD_TOKENS,
+)
+from agentic_rag.anchors.validators import (
+    conflict_risk as estimate_conflict_risk,
+)
+from agentic_rag.anchors.validators import (
+    coverage as anchor_coverage,
+)
+from agentic_rag.anchors.validators import (
+    mismatch_flags as anchor_mismatch_flags,
 )
 from agentic_rag.config import settings
-from agentic_rag.eval.signals import CIT_RE, faithfulness_score, is_idk, sentence_support
+from agentic_rag.data.meta import load_meta
+from agentic_rag.embed.encoder import embed_texts
+from agentic_rag.eval.signals import (
+    CIT_RE,
+    faithfulness_score,
+    is_idk,
+    sentence_support,
+)
 from agentic_rag.gate.adapter import BAUGAdapter
 from agentic_rag.models.adapter import ChatMessage, get_openai
 from agentic_rag.prompting import ContextBlock, pack_context
@@ -24,15 +41,11 @@ from agentic_rag.prompting_reflect import build_reflect_prompt, should_reflect
 from agentic_rag.retrieval.agent import Path, RetrievalAgent
 from agentic_rag.telemetry.recorder import log_round, log_summary
 from agentic_rag.utils.timing import timer
-from agentic_rag.agent.judge import create_judge
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from agentic_rag.embed.encoder import embed_texts
-from agentic_rag.agent.finalize import finalize_short_answer
-from agentic_rag.data.meta import load_meta
-from urllib.parse import urlparse
 
 
-def _build_prompt(contexts: list[dict[str, Any]], question: str) -> tuple[list[ChatMessage], str]:
+def _build_prompt(
+    contexts: list[dict[str, Any]], question: str
+) -> tuple[list[ChatMessage], str]:
     blocks = [f"CTX[{c['id']}]:\n{c['text']}" for c in contexts]
     context_str = "\n\n".join(blocks)
     system = (
@@ -48,15 +61,18 @@ def _build_prompt(contexts: list[dict[str, Any]], question: str) -> tuple[list[C
     )
     user = f"QUESTION:\n{question}\n\nCONTEXT:\n{context_str}"
     dbg = f"SYSTEM:\n{system}\n\n{user}"
-    return [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user)], dbg
+    return [
+        ChatMessage(role="system", content=system),
+        ChatMessage(role="user", content=user),
+    ], dbg
 
 
-def _normalize_answer(text: str, allowed_ids: List[str]) -> str:
+def _normalize_answer(text: str, allowed_ids: list[str]) -> str:
     t = (text or "").strip()
     if is_idk(t) or t.lower().startswith("i don't know"):
         return "I don't know"
 
-    allowed: Set[str] = set(allowed_ids)
+    allowed: set[str] = set(allowed_ids)
 
     def _repl(m: Any) -> str:  # type: ignore[no-redef]
         cid = m.group("id")
@@ -80,18 +96,18 @@ class AnchorSystem:
         self.retriever = RetrievalAgent()
         self.llm = get_openai()
         self.baug = BAUGAdapter()
-        self.judge = create_judge(self.llm, settings)
+        self.judge = create_judge(self.llm, settings)  # type: ignore
         # Load CRAG page metadata (url/title) for richer logs
         self.meta_map = load_meta()
 
-    def answer(self, question: str, qid: Optional[str] = None) -> Dict[str, Any]:
+    def answer(self, question: str, qid: str | None = None) -> dict[str, Any]:
         qid = qid or str(uuid.uuid4())
 
         tokens_left = settings.MAX_TOKENS_TOTAL
         total_tokens = 0
         latencies: list[int] = []
 
-        seen_doc_ids: Set[str] = set()
+        seen_doc_ids: set[str] = set()
         anchors = propose_anchors(question, top_m=8)
         # Always include a global retrieval pass (raw question) to emulate baseline coverage
         # then add up to 5 best anchors (total ~6 passes)
@@ -125,8 +141,8 @@ class AnchorSystem:
                     except Exception:
                         continue
 
-            # Merge contexts from all paths
-            all_ctx: list[ContextBlock] = []
+            # Merge contexts from all paths (assemble as dicts, convert to ContextBlock before pack)
+            all_ctx: list[dict[str, Any]] = []
             retrieved_ids: list[str] = []
             novelty_ratios = []
             fine_scores_all: list[float] = []
@@ -139,9 +155,21 @@ class AnchorSystem:
                             "id": doc_id,
                             "text": c.get("text", ""),
                             "score": float(c.get("score", 0.0)),
-                            "url": meta.get("url"),
-                            "title": meta.get("title"),
-                            "rank": meta.get("rank"),
+                            "url": (
+                                str(meta.get("url"))
+                                if meta.get("url") is not None
+                                else ""
+                            ),
+                            "title": (
+                                str(meta.get("title"))
+                                if meta.get("title") is not None
+                                else ""
+                            ),
+                            "rank": (
+                                int(meta.get("rank") or 0)
+                                if meta.get("rank") is not None
+                                else 0
+                            ),
                         }
                     )
                 retrieved_ids.extend(p.get("doc_ids", []))
@@ -152,8 +180,11 @@ class AnchorSystem:
             # and contexts list specific seasons, try an extra pass to pull per-game table chunks
             try:
                 import re as _re
+
                 ql = (question or "").lower()
-                has_504090 = bool(_re.search(r"\b\d{2}[-\/]\d{2}[-\/]\d{2}\b", ql)) or ("50-40-90" in ql or "50/40/90" in ql or "50–40–90" in ql)
+                has_504090 = bool(_re.search(r"\b\d{2}[-\/]\d{2}[-\/]\d{2}\b", ql)) or (
+                    "50-40-90" in ql or "50/40/90" in ql or "50–40–90" in ql
+                )
                 seasons = []
                 if all_ctx:
                     joined = " \n".join([c.get("text", "") for c in all_ctx])
@@ -161,20 +192,39 @@ class AnchorSystem:
                 if has_504090 and seasons:
                     # Add tokens likely to appear in per-game tables
                     helper_terms = ["3PA", "3P", "three-point attempts", "per game"]
-                    helper_anchor = " ".join(list(dict.fromkeys(seasons + helper_terms))[:10])
-                    extra_paths = self.retriever.explore(helper_anchor, question, 1, seen_doc_ids)
+                    helper_anchor = " ".join(
+                        list(dict.fromkeys(seasons + helper_terms))[:10]
+                    )
+                    extra_paths = self.retriever.explore(
+                        helper_anchor, question, 1, seen_doc_ids
+                    )
                     for p in extra_paths:
                         for c in p.get("passages", []):
                             doc_id = c.get("id", "")
                             meta = self.meta_map.get(doc_id, {})
-                            all_ctx.append({
-                                "id": doc_id,
-                                "text": c.get("text", ""),
-                                "score": float(c.get("score", 0.0)) + 0.5,  # small boost for helper hits
-                                "url": meta.get("url"),
-                                "title": meta.get("title"),
-                                "rank": meta.get("rank"),
-                            })
+                            all_ctx.append(
+                                {
+                                    "id": doc_id,
+                                    "text": c.get("text", ""),
+                                    "score": float(c.get("score", 0.0))
+                                    + 0.5,  # small boost for helper hits
+                                    "url": (
+                                        str(meta.get("url"))
+                                        if meta.get("url") is not None
+                                        else ""
+                                    ),
+                                    "title": (
+                                        str(meta.get("title"))
+                                        if meta.get("title") is not None
+                                        else ""
+                                    ),
+                                    "rank": (
+                                        int(meta.get("rank") or 0)
+                                        if meta.get("rank") is not None
+                                        else 0
+                                    ),
+                                }
+                            )
             except Exception:
                 pass
 
@@ -220,14 +270,24 @@ class AnchorSystem:
                     if req_aw.get("missing"):
                         req_tokens |= set(AWARD_TOKENS)
                     if req_ut.get("missing"):
-                        req_tokens |= {"per game", "%", "percent", "q1", "q2", "q3", "q4"}
+                        req_tokens |= {
+                            "per game",
+                            "%",
+                            "percent",
+                            "q1",
+                            "q2",
+                            "q3",
+                            "q4",
+                        }
 
                     scored = []
                     for blk in all_ctx:
                         t = (blk.get("text", "") or "").lower()
                         hit = sum(1 for tok in req_tokens if tok in t)
                         scored.append((hit, blk))
-                    scored.sort(key=lambda x: (x[0], x[1].get("score", 0.0)), reverse=True)
+                    scored.sort(
+                        key=lambda x: (x[0], x[1].get("score", 0.0)), reverse=True
+                    )
                     for hit, blk in scored[: settings.RESERVE_ANCHOR_SLOTS]:
                         if hit > 0:
                             blk["score"] = float(blk.get("score", 0.0)) + 10.0
@@ -239,19 +299,35 @@ class AnchorSystem:
             # - list_dense hint for enumeration queries
             def _anchors_from_question(q: str) -> set[str]:
                 import re as _re
+
                 s = (q or "").lower()
                 toks: set[str] = set(_re.findall(r"\b(?:19|20)\d{2}\b", s))
-                for t in ["oscar", "academy", "best", "grand slam", "per game", "%", "percent"]:
+                for t in [
+                    "oscar",
+                    "academy",
+                    "best",
+                    "grand slam",
+                    "per game",
+                    "%",
+                    "percent",
+                ]:
                     if t in s:
                         toks.add(t)
                 # ambil kata kapital (2 kata) sebagai anchor kasar
-                caps = _re.findall(r"\b([A-Z][A-Za-z0-9’'\-]*(?:\s+[A-Z][A-Za-z0-9’'\-]*){0,2})\b", question or "")
+                caps = _re.findall(
+                    r"\b([A-Z][A-Za-z0-9’'\-]*(?:\s+[A-Z][A-Za-z0-9’'\-]*){0,2})\b",
+                    question or "",
+                )
                 if caps:
                     toks.update({c.lower() for c in caps})
                 return toks
 
             anchor_tokens = _anchors_from_question(question)
-            list_like = (question or "").lower().startswith("what are") or (question or "").lower().startswith("list ") or "list the" in (question or "").lower()
+            list_like = (
+                (question or "").lower().startswith("what are")
+                or (question or "").lower().startswith("list ")
+                or "list the" in (question or "").lower()
+            )
 
             # Compute title_match, rank_score, list_dense and final pack score via weights
             w_fine = float(getattr(settings, "PACK_W_FINE", 0.9))
@@ -260,7 +336,11 @@ class AnchorSystem:
 
             for blk in all_ctx:
                 title = (blk.get("title") or "").lower()
-                title_match = 1.0 if (title and any(tok in title for tok in anchor_tokens)) else 0.0
+                title_match = (
+                    1.0
+                    if (title and any(tok in title for tok in anchor_tokens))
+                    else 0.0
+                )
                 try:
                     r = blk.get("rank")
                     if isinstance(r, int) and r is not None:
@@ -273,13 +353,24 @@ class AnchorSystem:
                 if list_like:
                     text = (blk.get("text") or "").strip()
                     # heuristik list-dense: jumlah koma/semicolon/bullet ≥ 8 atau title mengandung 'list'
-                    dense = text.count(",") + text.count(";") + text.count("•") + text.count("–")
-                    list_dense = 1.0 if (dense >= 8 or (title and "list" in title)) else 0.0
+                    dense = (
+                        text.count(",")
+                        + text.count(";")
+                        + text.count("•")
+                        + text.count("–")
+                    )
+                    list_dense = (
+                        1.0 if (dense >= 8 or (title and "list" in title)) else 0.0
+                    )
                 else:
                     list_dense = 0.0
                 fine = float(blk.get("fine_sim", 0.0))
                 # Final score fusion
-                blk["score"] = w_fine * fine + w_title * (title_match + list_dense) + w_rank * rank_score
+                blk["score"] = (
+                    w_fine * fine
+                    + w_title * (title_match + list_dense)
+                    + w_rank * rank_score
+                )
             # Type-aware budgets
             eff_cap = settings.MAX_CONTEXT_TOKENS
             eff_reserve = settings.RESERVE_ANCHOR_SLOTS
@@ -289,49 +380,95 @@ class AnchorSystem:
             else:
                 # simple factoid heuristic
                 ql = (question or "").lower()
-                is_factoid = any(t in ql for t in ["how many", "how much", "what year", "when", "average", "%", "per game"]) or bool(re.search(r"\b(19|20)\d{2}\b", ql))
+                is_factoid = any(
+                    t in ql
+                    for t in [
+                        "how many",
+                        "how much",
+                        "what year",
+                        "when",
+                        "average",
+                        "%",
+                        "per game",
+                    ]
+                ) or bool(re.search(r"\b(19|20)\d{2}\b", ql))
                 if is_factoid:
                     eff_cap = getattr(settings, "FACTOID_CAP_TOKENS", eff_cap)
-                    eff_reserve = getattr(settings, "FACTOID_RESERVE_SLOTS", eff_reserve)
+                    eff_reserve = getattr(
+                        settings, "FACTOID_RESERVE_SLOTS", eff_reserve
+                    )
 
             # Per-domain cap (≤N blok/domain) sebelum pack untuk memperlebar cakupan
-            sorted_ctx = sorted(all_ctx, key=lambda b: float(b.get("score", 0.0)), reverse=True)
-            kept: list[ContextBlock] = []
+            sorted_ctx = sorted(
+                all_ctx, key=lambda b: float(b.get("score", 0.0)), reverse=True
+            )
+            kept_raw: list[dict[str, Any]] = []
             domain_count: dict[str, int] = {}
             per_domain_limit = max(1, int(getattr(settings, "PACK_MAX_PER_DOMAIN", 2)))
-            per_doc_limit = max(1, int(getattr(settings, "PACK_MAX_PER_DOC_LIST", 2))) if list_like else None
+            per_doc_limit = (
+                max(1, int(getattr(settings, "PACK_MAX_PER_DOC_LIST", 2)))
+                if list_like
+                else None
+            )
             doc_count: dict[str, int] = {}
             for b in sorted_ctx:
-                url = b.get("url") or ""
+                url = str(b.get("url") or "")  # Explicitly cast to str
                 host = urlparse(url).netloc if url else ""
                 if host:
                     if domain_count.get(host, 0) >= per_domain_limit:
                         continue
                     domain_count[host] = domain_count.get(host, 0) + 1
                 if per_doc_limit is not None:
-                    doc_id = b.get("id") or ""
+                    doc_id = str(b.get("id") or "")  # Explicitly cast to str
                     stem = doc_id.split("__")[0] if "__" in doc_id else doc_id
                     if stem:
                         if doc_count.get(stem, 0) >= per_doc_limit:
                             continue
                         doc_count[stem] = doc_count.get(stem, 0) + 1
-                kept.append(b)
+                kept_raw.append(b)
 
+            # Build ContextBlock list from raw dicts (id, text, score only)
+            kept_blocks: list[ContextBlock] = [
+                {
+                    "id": str(b.get("id", "")),
+                    "text": str(b.get("text", "")),
+                    "score": float(b.get("score", 0.0)),
+                    "url": str(b.get("url", "")),
+                    "title": str(b.get("title", "")),
+                    "rank": int(b.get("rank", 0)),
+                    "fine_sim": float(b.get("fine_sim", 0.0)),
+                }
+                for b in kept_raw
+            ]
             packed, context_tokens, n_blocks = pack_context(
-                kept, max_tokens_cap=eff_cap
+                kept_blocks, max_tokens_cap=eff_cap
             )
             contexts = [dict(b) for b in packed]
             # Enrich packed contexts with meta if missing (defensive)
             for ctx in contexts:
-                mid = ctx.get("id", "")
+                mid = str(ctx.get("id", ""))  # Explicitly cast to str
                 if mid and "url" not in ctx:
-                    meta = self.meta_map.get(mid, {})
+                    meta = self.meta_map.get(
+                        mid, {}
+                    )  # meta can be dict or object, retrieve using get
                     if meta:
-                        ctx["url"] = meta.get("url")
-                        ctx["title"] = meta.get("title")
-                        ctx["rank"] = meta.get("rank")
+                        ctx["url"] = (
+                            str(meta.get("url")) if meta.get("url") is not None else ""
+                        )
+                        ctx["title"] = (
+                            str(meta.get("title"))
+                            if meta.get("title") is not None
+                            else ""
+                        )
+                        ctx["rank"] = (
+                            int(meta.get("rank") or 0)
+                            if meta.get("rank") is not None
+                            else 0
+                        )
             new_hits = [d for d in retrieved_ids if d not in seen_doc_ids]
-            new_hits_ratio = (len(new_hits) / max(1, len(retrieved_ids))) if retrieved_ids else 0.0
+            new_hits_ratio = (
+                (len(new_hits) / max(1, len(retrieved_ids))) if retrieved_ids else 0.0
+            )
 
             # Build prompt and get a draft answer (single generation per round)
             messages, debug_prompt = _build_prompt(contexts, question)
@@ -347,51 +484,87 @@ class AnchorSystem:
             tokens_left -= usage.get("total_tokens", 0)
 
             # Normalize answer citations
-            context_ids = [c["id"] for c in contexts]
+            context_ids = [str(c["id"]) for c in contexts]  # Explicitly cast to str
             draft = _normalize_answer(draft, context_ids)
             final_short = finalize_short_answer(question, draft)
 
             # Estimate support and faith
-            ctx_map = {c["id"]: c["text"] for c in contexts}
+            ctx_map = {
+                str(c["id"]): str(c["text"]) for c in contexts
+            }  # Explicitly cast to str
             sup = sentence_support(draft, ctx_map, tau_sim=settings.OVERLAP_SIM_TAU)
             overlap_est = float(sup.get("overlap", 0.0))
-            faith_ragas = faithfulness_score(question, [c["text"] for c in contexts], draft)
-            faith_est = faith_ragas if faith_ragas is not None else min(1.0, 0.6 + 0.4 * overlap_est)
+            faith_ragas = faithfulness_score(
+                question,
+                [str(c["text"]) for c in contexts],
+                draft,  # Explicitly cast to str
+            )
+            faith_est = (
+                faith_ragas
+                if faith_ragas is not None
+                else min(1.0, 0.6 + 0.4 * overlap_est)
+            )
 
             # Anchor validators and judge (gray-zone policy ≤ 1 call)
             try:
-                cov, present, missing = anchor_coverage(question, [c["text"] for c in contexts])
+                cov, present, missing = anchor_coverage(
+                    question,
+                    [str(c["text"]) for c in contexts],  # Explicitly cast to str
+                )
             except Exception:
                 cov, present, missing = 0.0, set(), set()
+            mismatches: dict[str, Any] = {
+                "temporal_mismatch": False,
+                "unit_mismatch": False,
+                "entity_mismatch": False,
+            }
             try:
-                mismatches = anchor_mismatch_flags(question, [c["text"] for c in contexts])
+                mismatches = anchor_mismatch_flags(
+                    question,
+                    [str(c["text"]) for c in contexts],  # Explicitly cast to str
+                )
             except Exception:
-                mismatches = {"temporal_mismatch": False, "unit_mismatch": False, "entity_mismatch": False}
+                pass
             try:
-                conf_risk = estimate_conflict_risk([c["text"] for c in contexts])
+                conf_risk = estimate_conflict_risk(
+                    [str(c["text"]) for c in contexts]
+                )  # Explicitly cast to str
             except Exception:
                 conf_risk = 0.0
 
             judge_extras = {}
             if (settings.JUDGE_POLICY == "always") or (
-                settings.JUDGE_POLICY == "gray_zone" and not used_judge and 0.4 <= overlap_est <= 0.6
+                settings.JUDGE_POLICY == "gray_zone"
+                and not used_judge
+                and 0.4 <= overlap_est <= 0.6
             ):
                 try:
-                    judge_assessment = self.judge.assess_context_sufficiency(question, contexts, round_idx=round_idx - 1)
+                    judge_assessment = self.judge.assess_context_sufficiency(
+                        question, contexts, round_idx=round_idx - 1
+                    )
                     used_judge = True
                     judge_extras = {
                         "judge_sufficient": judge_assessment.is_sufficient,
                         "judge_confidence": judge_assessment.confidence,
                         "judge_action": judge_assessment.suggested_action,
-                        "anchor_coverage": float(judge_assessment.anchor_coverage) if judge_assessment.anchor_coverage is not None else cov,
-                        "conflict_risk": float(judge_assessment.conflict_risk) if judge_assessment.conflict_risk is not None else conf_risk,
+                        "anchor_coverage": (
+                            float(judge_assessment.anchor_coverage)
+                            if judge_assessment.anchor_coverage is not None
+                            else cov
+                        ),
+                        "conflict_risk": (
+                            float(judge_assessment.conflict_risk)
+                            if judge_assessment.conflict_risk is not None
+                            else conf_risk
+                        ),
                         "mismatch_flags": judge_assessment.mismatch_flags or mismatches,
-                        "required_anchors": judge_assessment.required_anchors or list(present | set(missing)),
+                        "required_anchors": judge_assessment.required_anchors
+                        or list(present | set(missing)),
                     }
                     # Prefer judge coverage/risk
-                    cov = float(judge_extras.get("anchor_coverage", cov))
-                    conf_risk = float(judge_extras.get("conflict_risk", conf_risk))
-                    mismatches = judge_extras.get("mismatch_flags", mismatches)
+                    cov = float(judge_extras.get("anchor_coverage", float(cov)))
+                    conf_risk = float(judge_extras.get("conflict_risk", float(conf_risk)))
+                    mismatches = dict[str, Any](judge_extras.get("mismatch_flags", mismatches))
                 except Exception:
                     pass
 
@@ -477,11 +650,23 @@ class AnchorSystem:
                 # pick strongest anchor
                 best_anchor = selected_anchors[0] if selected_anchors else ""
                 try:
-                    extra_paths = self.retriever.explore(best_anchor, question, hop_budget=1, seen_doc_ids=seen_doc_ids)
+                    extra_paths = self.retriever.explore(
+                        best_anchor, question, hop_budget=1, seen_doc_ids=seen_doc_ids
+                    )
                     # Merge minimal extra contexts
                     for p in extra_paths:
                         for c in p.get("passages", []):
-                            contexts.append({"id": c.get("id", ""), "text": c.get("text", ""), "score": float(c.get("score", 0.0))})
+                            contexts.append(
+                                {
+                                    "id": c.get("id", ""),
+                                    "text": c.get("text", ""),
+                                    "score": float(c.get("score", 0.0)),
+                                    "url": "",
+                                    "title": "",
+                                    "rank": 0,
+                                    "fine_sim": 0.0,
+                                }
+                            )
                             retrieved_ids.append(c.get("id", ""))
                 except Exception:
                     pass
@@ -500,11 +685,16 @@ class AnchorSystem:
                 latencies.append(latency_ms2)
                 total_tokens += usage2.get("total_tokens", 0)
                 tokens_left -= usage2.get("total_tokens", 0)
+                context_ids = [str(c["id"]) for c in contexts]  # Explicitly cast to str
                 draft = _normalize_answer(draft2, context_ids)
                 final_action = "REFLECT"
                 # After reflect, stop this minimal version
                 break
-            elif action == "RETRIEVE_MORE" and round_idx < settings.MAX_ROUNDS and not short_reason:
+            elif (
+                action == "RETRIEVE_MORE"
+                and round_idx < settings.MAX_ROUNDS
+                and not short_reason
+            ):
                 # loop continues
                 prev_overlap = overlap_est
                 prev_anchor_cov = cov
@@ -514,7 +704,7 @@ class AnchorSystem:
                 break
 
         # Summary
-        summary: Dict[str, Any] = {
+        summary: dict[str, Any] = {
             "qid": qid,
             "question": question,
             "final_answer": draft,
@@ -522,7 +712,7 @@ class AnchorSystem:
             "rounds": round_idx,
             "n_rounds": round_idx,
             "total_tokens": total_tokens,
-            "p50_latency_ms": int(np.median(latencies)) if latencies else 0,  # type: ignore[name-defined]
+            "p50_latency_ms": int(np.median(latencies)) if latencies else 0,
             "latencies": latencies,
             "contexts": contexts if locals().get("contexts") is not None else [],
             "retrieved_ids": list(seen_doc_ids),

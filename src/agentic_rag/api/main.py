@@ -1,6 +1,6 @@
 """FastAPI main application with query endpoint."""
 
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from agentic_rag.agent.loop import Agent
 from agentic_rag.config import settings
@@ -28,8 +28,8 @@ class QueryResponse(BaseModel):
     answer: str
     confidence: float
     total_rounds: int
-    contexts_used: List[dict[str, Any]]
-    reasoning_trace: List[str]
+    contexts_used: list[dict[str, Any]]
+    reasoning_trace: list[str]
     processing_time_ms: float
     metadata: dict[str, Any] = {}
 

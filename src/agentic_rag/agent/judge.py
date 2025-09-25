@@ -6,7 +6,7 @@ retrieved context is sufficient to answer a given question.
 """
 
 import json
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Optional
 
 from agentic_rag.config import Settings
 from agentic_rag.models.adapter import ChatMessage, OpenAIAdapter
@@ -21,12 +21,12 @@ class ContextSufficiencyResult:
         confidence: float,
         reasoning: str,
         suggested_action: str,
-        query_transformations: Optional[List[str]] = None,
+        query_transformations: Optional[list[str]] = None,
         # New: deeper quality signals
         anchor_coverage: float | None = None,
         conflict_risk: float | None = None,
-        mismatch_flags: Optional[Dict[str, bool]] = None,
-        required_anchors: Optional[List[str]] = None,
+        mismatch_flags: Optional[dict[str, bool]] = None,
+        required_anchors: Optional[list[str]] = None,
     ):
         self.is_sufficient = is_sufficient
         self.confidence = confidence
@@ -53,7 +53,7 @@ class Judge:
         self.settings = settings
 
     def assess_context_sufficiency(
-        self, question: str, contexts: List[Dict[str, Any]], round_idx: int = 0
+        self, question: str, contexts: list[dict[str, Any]], round_idx: int = 0
     ) -> ContextSufficiencyResult:
         """
         Assess whether the retrieved contexts are sufficient to answer the question.
@@ -168,7 +168,7 @@ class Judge:
                 query_transformations=[],
             )
 
-    def _build_context_summary(self, contexts: List[Dict[str, Any]]) -> str:
+    def _build_context_summary(self, contexts: list[dict[str, Any]]) -> str:
         """Build a concise summary of retrieved contexts for the judge."""
         if not contexts:
             return "No contexts retrieved."
@@ -183,7 +183,7 @@ class Judge:
 
     def _build_judge_prompt(
         self, question: str, context_summary: str, round_idx: int
-    ) -> List[ChatMessage]:
+    ) -> list[ChatMessage]:
         """Build the prompt for the judge assessment."""
 
         system_content = """You are a Judge that evaluates whether retrieved contexts contain sufficient information to answer a question accurately.
@@ -300,14 +300,14 @@ Assess whether these contexts are sufficient to answer the question accurately."
                 required_anchors=[],
             )
 
-    def _extract_anchors(self, question: str) -> List[str]:
+    def _extract_anchors(self, question: str) -> list[str]:
         """Extract simple lexical anchors (temporal/entity/unit) from the question.
 
         This is intentionally lightweight (regex/keyword based) to avoid
         heavyweight NLP dependencies.
         """
         ql = (question or "").lower()
-        anchors: List[str] = []
+        anchors: list[str] = []
 
         # Years
         import re as _re
@@ -425,7 +425,7 @@ Assess whether these contexts are sufficient to answer the question accurately."
 
         # Dedup while preserving order
         seen: set[str] = set()
-        uniq: List[str] = []
+        uniq: list[str] = []
         for a in anchors:
             if a not in seen:
                 uniq.append(a)
@@ -433,8 +433,8 @@ Assess whether these contexts are sufficient to answer the question accurately."
         return uniq[:20]
 
     def _compute_anchor_coverage(
-        self, anchors: List[str], ctx_texts: List[str]
-    ) -> Tuple[float, List[str], bool]:
+        self, anchors: list[str], ctx_texts: list[str]
+    ) -> tuple[float, list[str], bool]:
         """Compute fraction of anchors present in contexts and detect temporal mismatch.
 
         Returns (coverage, missing_anchors, temporal_mismatch)
@@ -486,7 +486,7 @@ Assess whether these contexts are sufficient to answer the question accurately."
         return (coverage, missing, temporal_mismatch)
 
     def _detect_unit_mismatch(
-        self, question: str, contexts: List[Dict[str, Any]]
+        self, question: str, contexts: list[dict[str, Any]]
     ) -> bool:
         ql = (question or "").lower()
         ctx = (" \n".join([c.get("text", "") for c in contexts])).lower()
@@ -503,7 +503,7 @@ Assess whether these contexts are sufficient to answer the question accurately."
         return False
 
     def _detect_entity_mismatch(
-        self, question: str, contexts: List[Dict[str, Any]]
+        self, question: str, contexts: list[dict[str, Any]]
     ) -> bool:
         ql = (question or "").lower()
         ctx = (" \n".join([c.get("text", "") for c in contexts])).lower()
@@ -526,7 +526,7 @@ Assess whether these contexts are sufficient to answer the question accurately."
             return True
         return False
 
-    def _estimate_conflict_risk(self, contexts: List[Dict[str, Any]]) -> float:
+    def _estimate_conflict_risk(self, contexts: list[dict[str, Any]]) -> float:
         """Crude conflict risk estimator based on divergent numbers/dates across contexts."""
         import re as _re
 
@@ -559,8 +559,8 @@ class QueryTransformer:
         self,
         original_query: str,
         context_assessment: ContextSufficiencyResult,
-        failed_contexts: List[Dict[str, Any]],
-    ) -> List[str]:
+        failed_contexts: list[dict[str, Any]],
+    ) -> list[str]:
         """
         Transform the original query to improve retrieval.
 
@@ -580,8 +580,8 @@ class QueryTransformer:
         return self._generate_query_transformations(original_query, failed_contexts)
 
     def _generate_query_transformations(
-        self, query: str, failed_contexts: List[Dict[str, Any]]
-    ) -> List[str]:
+        self, query: str, failed_contexts: list[dict[str, Any]]
+    ) -> list[str]:
         """Generate query transformations using LLM."""
 
         context_summary = "\n".join(
@@ -631,7 +631,7 @@ Generate 2-3 alternative queries that might retrieve better information to answe
             # Fallback: simple entity-based transformation
             return self._fallback_transformations(query)
 
-    def _fallback_transformations(self, query: str) -> List[str]:
+    def _fallback_transformations(self, query: str) -> list[str]:
         """Generate simple fallback transformations without LLM."""
         transformations = []
 
@@ -664,7 +664,7 @@ def create_query_transformer(llm_client: OpenAIAdapter) -> QueryTransformer:
 # === Anchor helpers (exported) ===
 
 
-def extract_required_anchors(question: str) -> Set[str]:
+def extract_required_anchors(question: str) -> set[str]:
     """Extract required anchors (years, time windows, units, events/categories) from question."""
     q = (question or "").lower()
     anchors: set[str] = set()
@@ -776,8 +776,8 @@ def extract_required_anchors(question: str) -> Set[str]:
 
 
 def anchors_present_in_texts(
-    anchors: Set[str], texts: List[str]
-) -> Tuple[Set[str], float]:
+    anchors: set[str], texts: list[str]
+) -> tuple[set[str], float]:
     """Return (present_anchors, coverage) where coverage=present/len(anchors)."""
     if not anchors:
         return set(), 1.0
@@ -787,7 +787,7 @@ def anchors_present_in_texts(
     return present, cov
 
 
-def validate_factoid_anchors(question: str, texts: List[str]) -> Dict[str, bool]:
+def validate_factoid_anchors(question: str, texts: list[str]) -> dict[str, bool]:
     """Cheap validators for factoids: time/unit/event presence in cited text.
 
     Returns flags: {fail_time, fail_unit, fail_event}

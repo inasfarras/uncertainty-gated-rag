@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import IO, Any, Callable, Dict, List, Optional, Union, overload
+from typing import IO, Any, Callable, Optional, Union, overload
 
 import orjson
 
@@ -19,7 +19,7 @@ class JSONLReader:
         """
         self.file_path = Path(file_path)
 
-    def read_all(self) -> List[Dict[str, Any]]:
+    def read_all(self) -> list[dict[str, Any]]:
         """
         Read all lines from the JSONL file.
 
@@ -35,15 +35,15 @@ class JSONLReader:
         return data
 
     @overload
-    def iterate(self, batch_size: None = None) -> Iterator[Dict[str, Any]]: ...
+    def iterate(self, batch_size: None = None) -> Iterator[dict[str, Any]]: ...
 
     @overload
-    def iterate(self, batch_size: int) -> Iterator[List[Dict[str, Any]]]: ...
+    def iterate(self, batch_size: int) -> Iterator[list[dict[str, Any]]]: ...
 
     def iterate(
         self,
         batch_size: Optional[int] = None,
-    ) -> Iterator[Union[Dict[str, Any], List[Dict[str, Any]]]]:
+    ) -> Iterator[Union[dict[str, Any], list[dict[str, Any]]]]:
         """
         Iterate over lines in the JSONL file.
 
@@ -60,7 +60,7 @@ class JSONLReader:
                     if line:
                         yield orjson.loads(line)
         else:
-            batch: List[Dict[str, Any]] = []
+            batch: list[dict[str, Any]] = []
             with open(self.file_path, "rb") as f:
                 for line in f:
                     line = line.strip()
@@ -130,7 +130,7 @@ class JSONLWriter:
             self._file.close()
             self._file = None
 
-    def write(self, data: Dict[str, Any]) -> None:
+    def write(self, data: dict[str, Any]) -> None:
         """
         Write a single JSON object to the file.
 
@@ -151,7 +151,7 @@ class JSONLWriter:
         if self._file:
             self._file.write(json_bytes)
 
-    def write_batch(self, data_list: List[Dict[str, Any]]) -> None:
+    def write_batch(self, data_list: list[dict[str, Any]]) -> None:
         """
         Write multiple JSON objects to the file.
 
@@ -173,7 +173,7 @@ class JSONLWriter:
             self._file = None
 
 
-def read_jsonl(file_path: Union[str, Path]) -> List[Dict[str, Any]]:
+def read_jsonl(file_path: Union[str, Path]) -> list[dict[str, Any]]:
     """
     Convenience function to read all data from a JSONL file.
 
@@ -188,7 +188,7 @@ def read_jsonl(file_path: Union[str, Path]) -> List[Dict[str, Any]]:
 
 
 def write_jsonl(
-    data: List[Dict[str, Any]],
+    data: list[dict[str, Any]],
     file_path: Union[str, Path],
     mode: str = "w",
 ) -> None:
@@ -204,7 +204,7 @@ def write_jsonl(
         writer.write_batch(data)
 
 
-def append_jsonl(data: Dict[str, Any], file_path: Union[str, Path]) -> None:
+def append_jsonl(data: dict[str, Any], file_path: Union[str, Path]) -> None:
     """
     Convenience function to append a single record to a JSONL file.
 
@@ -217,7 +217,7 @@ def append_jsonl(data: Dict[str, Any], file_path: Union[str, Path]) -> None:
 
 
 def merge_jsonl_files(
-    input_files: List[Union[str, Path]],
+    input_files: list[Union[str, Path]],
     output_file: Union[str, Path],
 ) -> int:
     """
@@ -245,7 +245,7 @@ def merge_jsonl_files(
 def filter_jsonl(
     input_file: Union[str, Path],
     output_file: Union[str, Path],
-    filter_func: Callable[[Dict[str, Any]], bool],
+    filter_func: Callable[[dict[str, Any]], bool],
 ) -> int:
     """
     Filter a JSONL file based on a predicate function.

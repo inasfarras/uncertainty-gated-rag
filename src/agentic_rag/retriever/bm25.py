@@ -9,7 +9,6 @@ import math
 import pickle
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 import nltk
 import pandas as pd
@@ -55,18 +54,18 @@ class BM25Retriever:
         self.k1 = k1
         self.b = b
         # List of token lists; each entry is the tokenized document
-        self.corpus: List[List[str]] = []
-        self.doc_ids: List[str] = []
-        self.doc_freqs: Dict[str, int] = {}
-        self.idf_cache: Dict[str, float] = {}
-        self.doc_lengths: List[int] = []
+        self.corpus: list[list[str]] = []
+        self.doc_ids: list[str] = []
+        self.doc_freqs: dict[str, int] = {}
+        self.idf_cache: dict[str, float] = {}
+        self.doc_lengths: list[int] = []
         self.avg_doc_length: float = 0.0
         self.corpus_size: int = 0
         self.stop_words = set(stopwords.words("english"))
         # Schema/version tracking for safe loading
         self.schema_version: int = 2  # current schema stores token lists in corpus
 
-    def build_index(self, documents: List[Dict[str, str]]) -> None:
+    def build_index(self, documents: list[dict[str, str]]) -> None:
         """
         Build BM25 index from documents.
 
@@ -84,7 +83,7 @@ class BM25Retriever:
 
             # Tokenize and filter
             tokens = self._tokenize(text)
-            self.corpus.append(tokens) # Store tokens as a list
+            self.corpus.append(tokens)  # Store tokens as a list
             self.doc_ids.append(doc_id)
             self.doc_lengths.append(len(tokens))
 
@@ -93,14 +92,14 @@ class BM25Retriever:
 
         # Build document frequency counts
         self.doc_freqs = defaultdict(int)
-        for doc_tokens_list in self.corpus: # Iterate over the list of tokens
-            for token in set(doc_tokens_list): # Use the already tokenized list
+        for doc_tokens_list in self.corpus:  # Iterate over the list of tokens
+            for token in set(doc_tokens_list):  # Use the already tokenized list
                 self.doc_freqs[token] += 1
 
         # Pre-compute IDF values for common terms
         self._compute_idf_cache()
 
-    def _tokenize(self, text: str) -> List[str]:
+    def _tokenize(self, text: str) -> list[str]:
         """Tokenize text and remove stopwords."""
         try:
             raw_tokens = word_tokenize(text.lower())
@@ -108,7 +107,9 @@ class BM25Retriever:
             tokens = [
                 token
                 for token in raw_tokens
-                if (token.isascii() and any(c.isalnum() for c in token)) and token not in self.stop_words and len(token) > 1
+                if (token.isascii() and any(c.isalnum() for c in token))
+                and token not in self.stop_words
+                and len(token) > 1
             ]
             return tokens
         except Exception:
@@ -116,7 +117,8 @@ class BM25Retriever:
             tokens = [
                 word.lower()
                 for word in text.split()
-                if (word.isascii() and any(c.isalnum() for c in word)) and len(word) > 1
+                if (word.isascii() and any(c.isalnum() for c in word))
+                and len(word) > 1
                 and word.lower() not in self.stop_words
             ]
             return tokens
@@ -143,7 +145,7 @@ class BM25Retriever:
         self.idf_cache[term] = idf
         return idf
 
-    def _score_document(self, query_terms: List[str], doc_idx: int) -> float:
+    def _score_document(self, query_terms: list[str], doc_idx: int) -> float:
         """Calculate BM25 score for a document."""
         if doc_idx >= len(self.corpus):
             return 0.0
@@ -169,7 +171,7 @@ class BM25Retriever:
                 score += idf * (numerator / denominator)
         return score
 
-    def search(self, query: str, k: int = 10) -> List[Tuple[str, float]]:
+    def search(self, query: str, k: int = 10) -> list[tuple[str, float]]:
         """
         Search for top-k documents using BM25.
 
@@ -248,7 +250,9 @@ class BM25Retriever:
                 return True  # empty but OK
             if not isinstance(self.corpus[0], list):
                 return False
-            if len(self.doc_ids) != len(self.corpus) or len(self.doc_lengths) != len(self.corpus):
+            if len(self.doc_ids) != len(self.corpus) or len(self.doc_lengths) != len(
+                self.corpus
+            ):
                 return False
             return True
         except Exception:
@@ -278,7 +282,7 @@ class HybridRetriever:
 
     def search_hybrid(
         self, query: str, k: int = 10, vector_k: int = None, bm25_k: int = None
-    ) -> List[Tuple[str, float, str]]:
+    ) -> list[tuple[str, float, str]]:
         """
         Perform hybrid search combining vector and BM25 results.
 
@@ -338,7 +342,7 @@ class HybridRetriever:
         results.sort(key=lambda x: x[1], reverse=True)
         return [(doc_id, score, str(method)) for doc_id, score, method in results[:k]]
 
-    def _get_vector_results(self, query: str, k: int) -> List[Tuple[str, float]]:
+    def _get_vector_results(self, query: str, k: int) -> list[tuple[str, float]]:
         """Get results from vector retriever."""
         try:
             # Use the existing vector retriever's search method
@@ -352,7 +356,7 @@ class HybridRetriever:
         except Exception:
             return []
 
-    def _normalize_scores(self, scores: List[float]) -> List[float]:
+    def _normalize_scores(self, scores: list[float]) -> list[float]:
         """Normalize scores to [0,1] range using min-max normalization."""
         if not scores:
             return []

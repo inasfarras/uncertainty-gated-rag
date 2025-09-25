@@ -7,7 +7,6 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Dict
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 
@@ -144,7 +143,7 @@ def main() -> None:
     live_fetch_blocked = 0
     live_fetch_fail = 0
     docs_from = {"html": 0, "snippet": 0, "live": 0, "fallback": 0}
-    robot_parsers: Dict[str, RobotFileParser] = {}
+    robot_parsers: dict[str, RobotFileParser] = {}
 
     session = requests.Session()
     session.headers.update({"User-Agent": args.user_agent})

@@ -3,7 +3,7 @@
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agentic_rag.config import Settings
 
@@ -29,7 +29,7 @@ class GateSignals:
     semantic_coherence: float = 1.0  # New: semantic coherence score
     answer_length: int = 0  # New: response length for context
     question_complexity: float = 0.5  # New: question complexity indicator
-    extras: Optional[Dict[str, Any]] = None
+    extras: Optional[dict[str, Any]] = None
 
 
 class BaseGate(ABC):
@@ -74,7 +74,7 @@ class UncertaintyGate(BaseGate):
         )
 
         # Performance cache and settings
-        self._cache: Dict[str, Any] = {}
+        self._cache: dict[str, Any] = {}
         self._cache_hits = 0
         self._cache_misses = 0
         self._enable_caching = getattr(settings, "ENABLE_GATE_CACHING", True)
@@ -179,7 +179,7 @@ class UncertaintyGate(BaseGate):
         else:  # Low uncertainty
             return GateAction.STOP
 
-    def _get_adaptive_weights(self, signals: GateSignals) -> Dict[str, float]:
+    def _get_adaptive_weights(self, signals: GateSignals) -> dict[str, float]:
         """Adapt weights based on question complexity and context."""
         weights = self.base_weights.copy()
 
@@ -201,7 +201,7 @@ class UncertaintyGate(BaseGate):
         return {k: v / total for k, v in weights.items()}
 
     def _calculate_enhanced_uncertainty(
-        self, signals: GateSignals, weights: Dict[str, float]
+        self, signals: GateSignals, weights: dict[str, float]
     ) -> float:
         """Calculate enhanced uncertainty score with semantic analysis and Judge signals."""
         # Core uncertainty components
@@ -296,7 +296,7 @@ class UncertaintyGate(BaseGate):
         ]
         return "|".join(key_components)
 
-    def _get_from_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
+    def _get_from_cache(self, cache_key: str) -> Optional[dict[str, Any]]:
         """Get cached decision if available."""
         if cache_key in self._cache:
             self._cache_hits += 1
@@ -305,7 +305,7 @@ class UncertaintyGate(BaseGate):
         return None
 
     def _store_in_cache(
-        self, cache_key: str, decision: str, extras: Dict[str, Any]
+        self, cache_key: str, decision: str, extras: dict[str, Any]
     ) -> None:
         """Store decision in cache."""
         # Implement simple LRU by removing oldest entries when cache gets too large
@@ -316,7 +316,7 @@ class UncertaintyGate(BaseGate):
 
         self._cache[cache_key] = {"decision": decision, "extras": extras.copy()}
 
-    def get_cache_stats(self) -> Dict[str, Any]:
+    def get_cache_stats(self) -> dict[str, Any]:
         """Return cache performance statistics."""
         total_requests = self._cache_hits + self._cache_misses
         return {

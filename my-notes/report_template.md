@@ -41,4 +41,3 @@
 ## Notes
 - Deterministic settings maintained; REFLECT rarely invoked.
 - Logs in `logs/` contain per-round telemetry for reproducibility.
-

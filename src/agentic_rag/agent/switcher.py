@@ -3,7 +3,7 @@ strategies."""
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
 
@@ -24,10 +24,10 @@ class SwitchingDecision(BaseModel):
     strategy: RetrievalStrategy
     confidence: float
     reasoning: str
-    metadata: Dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
 
 
-RetrievalContext = List[ContextChunk]
+RetrievalContext = list[ContextChunk]
 
 
 class BaseSwitcher(ABC):
@@ -49,8 +49,8 @@ class BaseSwitcher(ABC):
         self,
         query: str,
         round_number: int,
-        previous_contexts: List[RetrievalContext],
-        metadata: Optional[Dict[str, Any]] = None,
+        previous_contexts: list[RetrievalContext],
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SwitchingDecision:
         """
         Decide which retrieval strategy to use.
@@ -76,7 +76,7 @@ class RetrieverSwitcher(BaseSwitcher):
         graph_retriever: Optional[Any] = None,  # TODO: Add graph retriever type
         switching_strategy: str = "round_robin",
         vector_threshold: float = 0.7,
-        graph_keywords: Optional[List[str]] = None,
+        graph_keywords: Optional[list[str]] = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -117,8 +117,8 @@ class RetrieverSwitcher(BaseSwitcher):
         self,
         query: str,
         round_number: int,
-        previous_contexts: List[RetrievalContext],
-        metadata: Optional[Dict[str, Any]] = None,
+        previous_contexts: list[RetrievalContext],
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SwitchingDecision:
         """Decide retrieval strategy based on configured approach."""
         if self.switching_strategy == "round_robin":
@@ -141,7 +141,7 @@ class RetrieverSwitcher(BaseSwitcher):
         self,
         query: str,
         round_number: int,
-        previous_contexts: List[RetrievalContext],
+        previous_contexts: list[RetrievalContext],
     ) -> SwitchingDecision:
         """
         Simple round-robin strategy alternating between strategies.
@@ -166,8 +166,8 @@ class RetrieverSwitcher(BaseSwitcher):
         self,
         query: str,
         round_number: int,
-        previous_contexts: List[RetrievalContext],
-        metadata: Optional[Dict[str, Any]] = None,
+        previous_contexts: list[RetrievalContext],
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SwitchingDecision:
         """
         Adaptive strategy based on previous round performance.
@@ -193,7 +193,7 @@ class RetrieverSwitcher(BaseSwitcher):
         self,
         query: str,
         round_number: int,
-        previous_contexts: List[RetrievalContext],
+        previous_contexts: list[RetrievalContext],
     ) -> SwitchingDecision:
         """
         Keyword-based strategy for selecting retrieval method.
@@ -231,7 +231,7 @@ class RetrieverSwitcher(BaseSwitcher):
 
     def _assess_vector_performance(
         self,
-        contexts: List[RetrievalContext],
+        contexts: list[RetrievalContext],
     ) -> float:
         """
         Assess performance of vector retrieval from previous rounds.
@@ -295,7 +295,7 @@ class RetrieverSwitcher(BaseSwitcher):
         else:
             raise ValueError(f"Unsupported retrieval strategy: {strategy}")
 
-    def get_available_strategies(self) -> List[RetrievalStrategy]:
+    def get_available_strategies(self) -> list[RetrievalStrategy]:
         """
         Get list of available retrieval strategies.
 
@@ -309,7 +309,7 @@ class RetrieverSwitcher(BaseSwitcher):
 
         return strategies
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """
         Get switcher statistics.
 
@@ -342,8 +342,8 @@ class SimpleSwitcher(BaseSwitcher):
         self,
         query: str,
         round_number: int,
-        previous_contexts: List[RetrievalContext],
-        metadata: Optional[Dict[str, Any]] = None,
+        previous_contexts: list[RetrievalContext],
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SwitchingDecision:
         """Always return the configured strategy."""
         return SwitchingDecision(

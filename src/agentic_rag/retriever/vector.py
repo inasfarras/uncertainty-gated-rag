@@ -1,6 +1,6 @@
 import os
 import re
-from typing import Any, Dict, List, Tuple, TypedDict
+from typing import Any, TypedDict
 
 import pandas as pd
 import tiktoken
@@ -19,6 +19,10 @@ class ContextChunk(TypedDict):
     id: str
     text: str
     score: float
+    url: str
+    title: str
+    rank: int
+    fine_sim: float
 
 
 class Candidate(TypedDict):
@@ -59,7 +63,10 @@ class VectorRetriever:
 
                 loaded = load_bm25_index(bm25_index_path)
                 # Validate schema; if outdated, rebuild
-                if hasattr(loaded, "is_schema_compatible") and not loaded.is_schema_compatible():
+                if (
+                    hasattr(loaded, "is_schema_compatible")
+                    and not loaded.is_schema_compatible()
+                ):
                     print("   ⚠️  BM25 index schema outdated → rebuilding...")
                     self.bm25_retriever = create_bm25_index(faiss_dir, bm25_index_path)
                     print("   📚 BM25 index rebuilt and saved")
@@ -85,7 +92,7 @@ class VectorRetriever:
 
     def _hybrid_search(
         self, query: str, k: int, probe_factor: int
-    ) -> List[Tuple[str, float, str]]:
+    ) -> list[tuple[str, float, str]]:
         """Perform hybrid search combining vector and BM25 results."""
         # Determine pool sizes
         pool_k = (
@@ -104,6 +111,7 @@ class VectorRetriever:
             bm25_hits = self.bm25_retriever.search(query, pool_k)
             try:
                 import os as _os
+
                 if _os.getenv("DEBUG_BM25_TOP"):
                     print("   🧪 BM25 top:", [cid for cid, _ in bm25_hits[:3]])
             except Exception:
@@ -125,11 +133,11 @@ class VectorRetriever:
 
     def _combine_retrieval_results(
         self,
-        vector_hits: List[Tuple[str, float]],
-        bm25_hits: List[Tuple[str, float]],
+        vector_hits: list[tuple[str, float]],
+        bm25_hits: list[tuple[str, float]],
         alpha: float = 0.7,
         question: str | None = None,
-    ) -> List[Tuple[str, float, str]]:
+    ) -> list[tuple[str, float, str]]:
         """Combine vector and BM25 results with score normalization."""
         import re as _re
 
@@ -192,11 +200,13 @@ class VectorRetriever:
         if bm25_hits:
             bm25_scores = [score for _, score in bm25_hits]
             min_b, max_b = min(bm25_scores), max(bm25_scores)
+
             def _bm25_text(cid: str) -> str:
                 try:
                     return self.chunks.loc[cid, "text"]
                 except Exception:
                     return f"Content for {cid} not available."
+
             if max_b > min_b:
                 bm25_normalized = [
                     (
@@ -220,7 +230,7 @@ class VectorRetriever:
             bm25_normalized = []
 
         # Combine scores
-        combined_scores: Dict[str, Dict[str, Any]] = {}
+        combined_scores: dict[str, dict[str, Any]] = {}
 
         # Add vector results
         bonus_weight = getattr(settings, "ANCHOR_BONUS", 0.07)
@@ -274,7 +284,7 @@ class VectorRetriever:
         exclude_doc_ids: set[str] | None = None,
         round_idx: int = 0,
         llm_client=None,
-    ) -> Tuple[List[dict], Dict[str, object]]:
+    ) -> tuple[list[dict], dict[str, object]]:
         """Enhanced retrieve with MMR, reranking, and HyDE support.
 
         Returns:
@@ -299,7 +309,7 @@ class VectorRetriever:
             # For hybrid search, hits already contain the text, so pass that along
             raw_hits = self._hybrid_search(search_query, k, probe_factor)
             # Convert raw_hits to (chunk_id, score) for compatibility with downstream logic
-            hits: List[Tuple[str, float, str]] = raw_hits
+            hits: list[tuple[str, float, str]] = raw_hits
         else:
             print("   🔍 Embedding query and searching...")
             pool_k = (
@@ -317,13 +327,16 @@ class VectorRetriever:
         # Step 3: Map chunk hits to best chunk per doc_id and prepare candidates
         # Prefer chunks that explicitly contain special anchors like 50-40-90
         import re as _re2
+
         # Special anchors: 50-40-90 style and season ranges (e.g., 2005-06)
-        special_anchors = set(_re2.findall(r"\b\d{2}[-\/]\d{2}[-\/]\d{2}\b", (query or "")))
+        special_anchors = set(
+            _re2.findall(r"\b\d{2}[-\/]\d{2}[-\/]\d{2}\b", (query or ""))
+        )
         special_anchors.update(_re2.findall(r"\b20\d{2}[-–\/]\d{2}\b", (query or "")))
         # Include common variants explicitly
         if any(x in (query or "") for x in ["50-40-90", "50/40/90", "50–40–90"]):
             special_anchors.update({"50-40-90", "50/40/90", "50–40–90"})
-        best_by_doc: Dict[str, Tuple[str, float, str]] = {}
+        best_by_doc: dict[str, tuple[str, float, str]] = {}
         for chunk_id, score, text in hits:
             raw_doc_id = chunk_id.split("__")[0]
             doc_id = re.sub(r"[^A-Za-z0-9_\-]", "_", raw_doc_id)
@@ -335,7 +348,9 @@ class VectorRetriever:
 
             # Boost chunks that contain special anchors (e.g., '50-40-90') so they win per-doc selection
             try:
-                if special_anchors and any(a in (current_text or "") for a in special_anchors):
+                if special_anchors and any(
+                    a in (current_text or "") for a in special_anchors
+                ):
                     current_score = float(current_score) + 1.5
             except Exception:
                 pass
@@ -353,8 +368,14 @@ class VectorRetriever:
                     doc_id = re.sub(r"[^A-Za-z0-9_\-]", "_", raw_doc_id)
                     if doc_id in best_by_doc and doc_id not in seen_docs:
                         # Prefer a chunk that contains explicit anchors if available
-                        if special_anchors and any(a in (text or "") for a in special_anchors) and best_by_doc[doc_id][0] != chunk_id:
-                            extras.append((doc_id, (chunk_id, float(score) + 1.0, text)))
+                        if (
+                            special_anchors
+                            and any(a in (text or "") for a in special_anchors)
+                            and best_by_doc[doc_id][0] != chunk_id
+                        ):
+                            extras.append(
+                                (doc_id, (chunk_id, float(score) + 1.0, text))
+                            )
                             seen_docs.add(doc_id)
                         # Otherwise, keep the next best chunk by score as a fallback when special anchors are in play
                         elif special_anchors and best_by_doc[doc_id][0] != chunk_id:
@@ -362,7 +383,11 @@ class VectorRetriever:
                             seen_docs.add(doc_id)
                 for doc_id, tpl in extras:
                     # Extend or replace by adding another entry; downstream will handle duplicates
-                    suffix = "__extra" if doc_id + "__extra" not in best_by_doc else "__extra2"
+                    suffix = (
+                        "__extra"
+                        if doc_id + "__extra" not in best_by_doc
+                        else "__extra2"
+                    )
                     best_by_doc[doc_id + suffix] = tpl
             except Exception:
                 pass
@@ -370,20 +395,25 @@ class VectorRetriever:
         # Re-refine per-doc selection: keep up to 2 chunks per doc for special anchors/seasons
         try:
             import re as _re3
-            special_in_q = set(_re3.findall(r"\b\d{2}[-\/]\d{2}[-\/]\d{2}\b", (query or "")))
+
+            special_in_q = set(
+                _re3.findall(r"\b\d{2}[-\/]\d{2}[-\/]\d{2}\b", (query or ""))
+            )
             if any(x in (query or "") for x in ["50-40-90", "50/40/90", "50–40–90"]):
                 special_in_q.update({"50-40-90", "50/40/90", "50–40–90"})
             seasons_in_q = set(_re3.findall(r"\b20\d{2}[-–\/]\d{2}\b", (query or "")))
             if special_in_q:
                 # rebuild per-doc map from raw hits to allow multi-chunk selection
-                by_doc2: Dict[str, list[Tuple[str, float, str]]] = {}
+                by_doc2: dict[str, list[tuple[str, float, str]]] = {}
                 for chunk_id, score, text in hits:
                     raw_doc_id = chunk_id.split("__")[0]
                     doc_id = re.sub(r"[^A-Za-z0-9_\-]", "_", raw_doc_id)
                     if exclude_doc_ids and doc_id in exclude_doc_ids:
                         continue
-                    by_doc2.setdefault(doc_id, []).append((chunk_id, float(score), text))
-                refined: Dict[str, Tuple[str, float, str]] = {}
+                    by_doc2.setdefault(doc_id, []).append(
+                        (chunk_id, float(score), text)
+                    )
+                refined: dict[str, tuple[str, float, str]] = {}
                 for doc_id, lst in by_doc2.items():
                     scored = []
                     # Optionally augment with in-doc chunks that contain cues but weren't in initial hits
@@ -399,9 +429,23 @@ class VectorRetriever:
                                     continue
                                 tx_all = self.chunks.loc[cid_all, "text"]
                                 tl_all = (tx_all or "").lower()
-                                if any(a.lower() in tl_all for a in special_in_q) or (
-                                    seasons_in_q and any(s.lower() in tl_all for s in seasons_in_q)
-                                ) or any(c in tl_all for c in ["3pa", "three-point attempts", "per game"]):
+                                if (
+                                    any(a.lower() in tl_all for a in special_in_q)
+                                    or (
+                                        seasons_in_q
+                                        and any(
+                                            s.lower() in tl_all for s in seasons_in_q
+                                        )
+                                    )
+                                    or any(
+                                        c in tl_all
+                                        for c in [
+                                            "3pa",
+                                            "three-point attempts",
+                                            "per game",
+                                        ]
+                                    )
+                                ):
                                     augmented.append((cid_all, 0.0, tx_all))
                                     scan_count += 1
                                 if scan_count >= 3:
@@ -415,7 +459,9 @@ class VectorRetriever:
                             boost += 1.2
                         if seasons_in_q and any(s.lower() in tl for s in seasons_in_q):
                             boost += 0.8
-                        if any(c in tl for c in ["3pa", "three-point attempts", "per game"]):
+                        if any(
+                            c in tl for c in ["3pa", "three-point attempts", "per game"]
+                        ):
                             boost += 0.5
                         scored.append((cid, float(sc) + boost, tx))
                     scored.sort(key=lambda t: t[1], reverse=True)
@@ -429,7 +475,7 @@ class VectorRetriever:
 
         # Hard fallback: if selection failed but we have raw hits, keep top hits grouped by doc
         if (not best_by_doc) and hits:
-            by_doc_fb: Dict[str, list[Tuple[str, float, str]]] = {}
+            by_doc_fb: dict[str, list[tuple[str, float, str]]] = {}
             for chunk_id, score, text in hits:
                 raw_doc_id = chunk_id.split("__")[0]
                 doc_id = re.sub(r"[^A-Za-z0-9_\-]", "_", raw_doc_id)
@@ -443,11 +489,14 @@ class VectorRetriever:
         # Debug: selection snapshot
         try:
             import os as _os_dbg
+
             if _os_dbg.getenv("DEBUG_RETRIEVER"):
                 snap = f"[DEBUG] hits={len(hits)} docs={len(best_by_doc)} keys={list(best_by_doc.keys())[:6]}\n"
                 print("   " + snap)
                 try:
-                    with open("temp_analysis_output.txt", "a", encoding="utf-8") as _fdbg:
+                    with open(
+                        "temp_analysis_output.txt", "a", encoding="utf-8"
+                    ) as _fdbg:
                         _fdbg.write(snap)
                 except Exception:
                     pass
@@ -505,7 +554,9 @@ class VectorRetriever:
                     msg = f"[DEBUG] Fallback candidates: {len(candidates)}\n"
                     print("   " + msg)
                     try:
-                        with open("temp_analysis_output.txt", "a", encoding="utf-8") as _fdbg:
+                        with open(
+                            "temp_analysis_output.txt", "a", encoding="utf-8"
+                        ) as _fdbg:
                             _fdbg.write(msg)
                     except Exception:
                         pass
@@ -566,15 +617,20 @@ class VectorRetriever:
             print(f"   📋 Selected top-{k} by score")
 
         # Step 6: Prepare blocks for packing
-        blocks: List[ContextBlock] = []
+        blocks: list[ContextBlock] = []
         retrieved_ids = []
         # Optional slicing of long texts around relevant tokens to expose numbers (50-40-90 / seasons / 3PA)
         try:
             import re as _re_slice
-            special_in_q = set(_re_slice.findall(r"\b\d{2}[-\/]\d{2}[-\/]\d{2}\b", (query or "")))
+
+            special_in_q = set(
+                _re_slice.findall(r"\b\d{2}[-\/]\d{2}[-\/]\d{2}\b", (query or ""))
+            )
             if any(x in (query or "") for x in ["50-40-90", "50/40/90", "50–40–90"]):
                 special_in_q.update({"50-40-90", "50/40/90", "50–40–90"})
-            seasons_in_q = set(_re_slice.findall(r"\b20\d{2}[-\u2013\/]\d{2}\b", (query or "")))
+            seasons_in_q = set(
+                _re_slice.findall(r"\b20\d{2}[-\u2013\/]\d{2}\b", (query or ""))
+            )
             do_slice = bool(special_in_q)
             slice_tokens = {t.lower() for t in seasons_in_q}
             slice_tokens.update({"3pa", "3p", "three-point attempts"})
@@ -593,12 +649,23 @@ class VectorRetriever:
                     start = max(0, center - span)
                     end = min(len(t), center + span)
                     t = t[start:end]
-            blocks.append({"id": candidate["doc_id"], "text": t, "score": candidate["score"]})
+            blocks.append(
+                {
+                    "id": candidate["chunk_id"],
+                    "text": t,
+                    "score": candidate["score"],
+                    "url": "",
+                    "title": "",
+                    "rank": 0,
+                    "fine_sim": 0.0,
+                }
+            )
             retrieved_ids.append(candidate["doc_id"])
 
         # Reserve rule: force-include a chunk that contains season token and 3PA cues when special pattern is present
         try:
             import re as _re_res
+
             def _has_season_and_3pa(txt: str) -> bool:
                 if not txt:
                     return False
@@ -607,13 +674,27 @@ class VectorRetriever:
                 has_3pa = ("3pa" in tl) or ("three-point attempts" in tl)
                 return has_season and has_3pa
 
-            reserve_needed = do_slice and not any(_has_season_and_3pa(b.get("text", "")) for b in blocks)
+            reserve_needed = do_slice and not any(
+                _has_season_and_3pa(b.get("text", "")) for b in blocks
+            )
             if reserve_needed and hits:
                 # find first hit with season+3pa
                 for chunk_id, score, text in hits:
                     if _has_season_and_3pa(text):
-                        doc_id = re.sub(r"[^A-Za-z0-9_\-]", "_", chunk_id.split("__")[0])
-                        blocks.append({"id": doc_id, "text": text, "score": float(score) + 0.1})
+                        doc_id = re.sub(
+                            r"[^A-Za-z0-9_\-]", "_", chunk_id.split("__")[0]
+                        )
+                        blocks.append(
+                            {
+                                "id": doc_id,
+                                "text": text,
+                                "score": float(score) + 0.1,
+                                "url": "",
+                                "title": "",
+                                "rank": 0,
+                                "fine_sim": 0.0,
+                            }
+                        )
                         retrieved_ids.append(doc_id)
                         break
         except Exception:
@@ -649,16 +730,26 @@ class VectorRetriever:
         }
         return contexts_list, stats
 
-    def retrieve(self, query: str, k: int) -> List[ContextChunk]:
+    def retrieve(self, query: str, k: int) -> list[ContextChunk]:
         """Backwards-compatible retrieve that returns raw top-k chunks (no packing)."""
         qvec = embed_texts([query])[0]
         hits = self.store.search(qvec, k)
-        out: List[ContextChunk] = []
+        out: list[ContextChunk] = []
         for chunk_id, score in hits:
             # Ensure that the text is always available in the ContextChunk
             if chunk_id in self.chunks.index:
                 text = self.chunks.loc[chunk_id, "text"]
-                out.append({"id": chunk_id, "text": text, "score": score})
+                out.append(
+                    {
+                        "id": chunk_id,
+                        "text": text,
+                        "score": score,
+                        "url": "",
+                        "title": "",
+                        "rank": 0,
+                        "fine_sim": 0.0,
+                    }
+                )
             else:
                 print(
                     f"Warning: Chunk ID {chunk_id} not found in index during retrieve."

@@ -12,13 +12,13 @@ from rich.console import Console
 from rich.table import Table
 
 from agentic_rag.agent.loop import Agent, Baseline
-from agentic_rag.supervisor.orchestrator import AnchorSystem
 from agentic_rag.config import settings
 from agentic_rag.eval.signals import (
     em_f1,
     faithfulness_fallback,
     sentence_support,
 )
+from agentic_rag.supervisor.orchestrator import AnchorSystem
 
 # Helper functions for runner
 _IDK_PAT = re.compile(r"^i\s*do?n'?t\s*know\.?$")
@@ -200,7 +200,7 @@ def run(
         questions = questions[:n]
 
     # Select system
-    model: object
+    model: Agent | Baseline | AnchorSystem  # Use Union for explicit typing
     if system == "agent":
         model = Agent(gate_on=gate_on, debug_mode=debug_prompts)
     elif system == "baseline":
@@ -221,7 +221,9 @@ def run(
     console.print(
         f"[bold green]Running evaluation for system: '{system}' with gate {gate_note}[/bold green]"
     )
-    console.print(f"[bold]Logs directory:[/bold] {getattr(settings, 'log_dir', 'logs')}")
+    console.print(
+        f"[bold]Logs directory:[/bold] {getattr(settings, 'log_dir', 'logs')}"
+    )
 
     # Run evaluation
     results = []
@@ -266,9 +268,7 @@ def run(
         short_pred = summary.get("final_short") or ""
         ef_full = em_f1(full_pred, gold_text)
         ef_short = (
-            em_f1(short_pred, gold_text)
-            if short_pred
-            else {"em": 0.0, "f1": 0.0}
+            em_f1(short_pred, gold_text) if short_pred else {"em": 0.0, "f1": 0.0}
         )
         # Choose scoring strategy: prefer final_short when available
         if short_pred:
@@ -479,22 +479,27 @@ def run(
             }
         # Optional: load metadata to resolve URLs of cited docs
         from agentic_rag.data.meta import load_meta
+
         meta_map = load_meta()
-        from agentic_rag.eval.signals import extract_citations
         import csv as _csv
+
+        from agentic_rag.eval.signals import extract_citations
+
         with open(qa_path, "w", newline="", encoding="utf-8") as fqa:
             writer = _csv.writer(fqa)
-            writer.writerow([
-                "id",
-                "question",
-                "agent_final_answer",
-                "agent_final_short",
-                "gold",
-                "alt_ans",
-                "cited_doc_ids",
-                "cited_urls",
-                "cited_titles",
-            ])
+            writer.writerow(
+                [
+                    "id",
+                    "question",
+                    "agent_final_answer",
+                    "agent_final_short",
+                    "gold",
+                    "alt_ans",
+                    "cited_doc_ids",
+                    "cited_urls",
+                    "cited_titles",
+                ]
+            )
             for res in results:
                 qid = str(res.get("qid"))
                 gm = gold_map.get(qid, {"question": "", "gold": "", "alt_ans": []})
@@ -507,17 +512,23 @@ def run(
                         urls.append(str(m.get("url")))
                     if m.get("title"):
                         titles.append(str(m.get("title")))
-                writer.writerow([
-                    qid,
-                    gm.get("question", ""),
-                    res.get("final_answer", ""),
-                    res.get("final_short", ""),
-                    gm.get("gold", ""),
-                    "; ".join(gm.get("alt_ans", []) if isinstance(gm.get("alt_ans"), list) else []),
-                    "; ".join(cids),
-                    "; ".join(urls),
-                    "; ".join(titles),
-                ])
+                writer.writerow(
+                    [
+                        qid,
+                        gm.get("question", ""),
+                        res.get("final_answer", ""),
+                        res.get("final_short", ""),
+                        gm.get("gold", ""),
+                        "; ".join(
+                            gm.get("alt_ans", [])
+                            if isinstance(gm.get("alt_ans"), list)
+                            else []
+                        ),
+                        "; ".join(cids),
+                        "; ".join(urls),
+                        "; ".join(titles),
+                    ]
+                )
         console.print(f"QA pairs saved to [cyan]{qa_path}[/cyan]")
     except Exception:
         pass
@@ -603,14 +614,16 @@ def run(
 
         # Add override details if provided
         if override:
-            summary_lines.extend([
-                "",
-                "## Overrides",
-                "",
-                "```",
-                " ".join(override),
-                "```",
-            ])
+            summary_lines.extend(
+                [
+                    "",
+                    "## Overrides",
+                    "",
+                    "```",
+                    " ".join(override),
+                    "```",
+                ]
+            )
 
         md_content = "\n".join(summary_lines) + "\n"
         with open(md_path, "w", encoding="utf-8") as f:

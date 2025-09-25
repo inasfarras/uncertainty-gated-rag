@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 from agentic_rag.supervisor.orchestrator import AnchorSystem
 
 
@@ -9,7 +7,10 @@ class DummyLLM:
 
     def chat(self, messages, model=None, max_tokens=128, temperature=0.0):
         # Always produce IDK to keep things deterministic
-        return ("I don't know", {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13})
+        return (
+            "I don't know",
+            {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13},
+        )
 
 
 def test_anchor_orchestrator_runs_monkeypatch(tmp_path, monkeypatch):
@@ -40,4 +41,3 @@ def test_anchor_orchestrator_runs_monkeypatch(tmp_path, monkeypatch):
     assert "final_answer" in res
     # JSONL log file should be present
     # (path derived from settings.LOG_DIR, which defaults to logs/)
-

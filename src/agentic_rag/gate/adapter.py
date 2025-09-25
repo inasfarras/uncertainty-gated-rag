@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+import importlib
+import os
+from typing import Any
+
+from agentic_rag.agent.gate import GateSignals, UncertaintyGate
+from agentic_rag.config import settings
+
 """Adapter to call external BAUG with the expected signals.
 
 If no external BAUG is provided, falls back to the in-repo UncertaintyGate
 to keep the pipeline runnable. This keeps BAUG as the final authority
 for STOP / RETRIEVE_MORE / REFLECT / ABSTAIN.
 """
-
-import importlib
-import os
-from typing import Any, Dict
-
-from agentic_rag.agent.gate import GateSignals, UncertaintyGate
-from agentic_rag.config import settings
 
 
 class BAUGAdapter:
@@ -31,7 +31,7 @@ class BAUGAdapter:
                 print(f"⚠️  Failed to load BAUG_HANDLER '{self._external}': {e}")
                 self._callable = None
 
-    def decide(self, signals: Dict[str, Any]) -> str:
+    def decide(self, signals: dict[str, Any]) -> str:
         """Return BAUG action from signals dict.
 
         Signals expected keys: overlap_est, faith_est, new_hits_ratio, anchor_coverage,

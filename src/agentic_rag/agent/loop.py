@@ -1,17 +1,12 @@
 import json
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, cast
+from typing import Any, cast
 
 import numpy as np
 import typer
 
 from agentic_rag.agent import finalize as finalize_utils
-from agentic_rag.agent.qanchors import (
-    extract_required_anchors as q_extract_required_anchors,
-    anchors_present_in_texts as q_anchors_present_in_texts,
-    is_factoid as q_is_factoid,
-)
 from agentic_rag.agent.gate import GateAction, GateSignals, make_gate
 from agentic_rag.agent.judge import (
     anchors_present_in_texts,
@@ -19,6 +14,15 @@ from agentic_rag.agent.judge import (
     create_query_transformer,
     extract_required_anchors,
     validate_factoid_anchors,
+)
+from agentic_rag.agent.qanchors import (
+    anchors_present_in_texts as q_anchors_present_in_texts,
+)
+from agentic_rag.agent.qanchors import (
+    extract_required_anchors as q_extract_required_anchors,
+)
+from agentic_rag.agent.qanchors import (
+    is_factoid as q_is_factoid,
 )
 from agentic_rag.config import settings
 from agentic_rag.eval.signals import (
@@ -268,7 +272,7 @@ def is_global_question(q: str) -> bool:
 
 def build_prompt(
     contexts: list[dict[str, Any]], question: str
-) -> tuple[List[ChatMessage], str]:
+) -> tuple[list[ChatMessage], str]:
     """Builds a prompt for the LLM and returns messages and a debug string."""
     # Render context blocks
     context_blocks = []
@@ -287,7 +291,7 @@ def build_prompt(
     ], debug_prompt
 
 
-def _normalize_answer(text: str, allowed_ids: List[str]) -> str:
+def _normalize_answer(text: str, allowed_ids: list[str]) -> str:
     # Enforce that IDK carries no citations or extra text
     tstrip = (text or "").strip()
     if is_idk(tstrip) or tstrip.lower().startswith("i don't know"):
@@ -306,7 +310,7 @@ def _normalize_answer(text: str, allowed_ids: List[str]) -> str:
         return text
 
 
-def _should_force_idk(question: str, context_texts: List[str]) -> bool:
+def _should_force_idk(question: str, context_texts: list[str]) -> bool:
     """Heuristic: prefer abstain for underspecified superlatives/temporal questions.
 
     Returns True if we should force "I don't know" given the question and provided contexts.
@@ -314,7 +318,7 @@ def _should_force_idk(question: str, context_texts: List[str]) -> bool:
     q = (question or "").lower()
     ctx = (" \n".join(context_texts or [])).lower()
 
-    def any_in(s: str, terms: List[str]) -> bool:
+    def any_in(s: str, terms: list[str]) -> bool:
         return any(t in s for t in terms)
 
     superlative_terms = [
@@ -442,11 +446,13 @@ class BaseAgent:
         # Use configurable log directory
         # Prefer new lowercase setting; fallback to legacy uppercase; then default
         self.log_dir = Path(
-            (getattr(settings, "log_dir", None) or getattr(settings, "LOG_DIR", None) or "logs")
+            getattr(settings, "log_dir", None)
+            or getattr(settings, "LOG_DIR", None)
+            or "logs"
         )
         self.log_dir.mkdir(exist_ok=True)
 
-    def _log_jsonl(self, data: Dict[str, Any], log_path: Path):
+    def _log_jsonl(self, data: dict[str, Any], log_path: Path):
         with open(log_path, "a") as f:
             f.write(json.dumps(data, cls=NpEncoder) + "\n")
 
@@ -471,7 +477,7 @@ class Baseline(BaseAgent):
 
         super().__init__(system="baseline", debug_mode=debug_mode)
 
-    def answer(self, question: str, qid: str | None = None) -> Dict[str, Any]:
+    def answer(self, question: str, qid: str | None = None) -> dict[str, Any]:
         qid = qid or str(uuid.uuid4())
         log_path = self.log_dir / f"{self.system}_{qid}.jsonl"
 
@@ -574,7 +580,7 @@ class Agent(BaseAgent):
         self.judge = create_judge(self.llm, settings)
         self.query_transformer = create_query_transformer(self.llm)
 
-    def answer(self, question: str, qid: str | None = None) -> Dict[str, Any]:
+    def answer(self, question: str, qid: str | None = None) -> dict[str, Any]:
         qid = qid or str(uuid.uuid4())
         log_path = self.log_dir / f"{self.system}_{qid}.jsonl"
 
@@ -887,13 +893,13 @@ class Agent(BaseAgent):
             has_new_hits = len(new_hits) > 0
 
             # Prepare gate extras early so logging never breaks
-            gate_extras: Dict[str, Any] = {}
+            gate_extras: dict[str, Any] = {}
             # Initialize anchor variables for logging regardless of branch
             qtype = finalize_utils.detect_type(question)
             required_anchors = []  # type: list[str]
             anchor_cov = 0.0
             anchor_missing: list[str] = []
-            validators: Dict[str, Any] = {}
+            validators: dict[str, Any] = {}
             used_anchor_constrained_search = False
 
             try:
@@ -1095,11 +1101,15 @@ class Agent(BaseAgent):
                         present_set = q_anchors_present_in_texts(
                             [c["text"] for c in contexts], set(required_anchors)
                         )
-                        anchor_missing = sorted(list(set(required_anchors) - present_set))
+                        anchor_missing = sorted(
+                            list(set(required_anchors) - present_set)
+                        )
                     except Exception:
                         pass
                     if anchor_missing:
-                        new_query = question + " " + " ".join(sorted(anchor_missing)[:4])
+                        new_query = (
+                            question + " " + " ".join(sorted(anchor_missing)[:4])
+                        )
                     print(
                         f"🧲 Anchor-constrained retrieval: missing={anchor_missing[:4]} (cov={cov:.2f})"
                     )
@@ -1194,7 +1204,10 @@ class Agent(BaseAgent):
                         round_idx=r,
                         llm_client=self.llm,
                     )
-                    contexts = transform_contexts[: max(2, min(4, len(transform_contexts)))] or contexts
+                    contexts = (
+                        transform_contexts[: max(2, min(4, len(transform_contexts)))]
+                        or contexts
+                    )
                     context_ids = [c["id"] for c in contexts]
                     context_texts = [c["text"] for c in contexts]
                     prompt, debug_prompt = build_prompt(contexts, question)
@@ -1217,10 +1230,16 @@ class Agent(BaseAgent):
                         tau_sim=settings.OVERLAP_SIM_TAU,
                     )
                     o = float(sup.get("overlap", 0.0))
-                    f = faith_ragas if faith_ragas is not None else min(1.0, 0.6 + 0.4 * o)
+                    f = (
+                        faith_ragas
+                        if faith_ragas is not None
+                        else min(1.0, 0.6 + 0.4 * o)
+                    )
                     action = (
                         GateAction.STOP
-                        if (f >= settings.FAITHFULNESS_TAU and o >= settings.OVERLAP_TAU)
+                        if (
+                            f >= settings.FAITHFULNESS_TAU and o >= settings.OVERLAP_TAU
+                        )
                         else GateAction.ABSTAIN
                     )
                     used_anchor_constrained_search = True

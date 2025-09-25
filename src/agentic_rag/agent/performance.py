@@ -3,7 +3,7 @@
 import time
 from collections import OrderedDict
 from functools import wraps
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 
 class LRUCache:
@@ -40,7 +40,7 @@ class LRUCache:
         self.hits = 0
         self.misses = 0
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         total = self.hits + self.misses
         return {
             "hits": self.hits,
@@ -55,8 +55,8 @@ class PerformanceProfiler:
     """Simple performance profiler for gate operations."""
 
     def __init__(self):
-        self.timings: Dict[str, list[float]] = {}
-        self.call_counts: Dict[str, int] = {}
+        self.timings: dict[str, list[float]] = {}
+        self.call_counts: dict[str, int] = {}
 
     def time_function(self, func_name: str):
         """Decorator to time function calls."""
@@ -83,7 +83,7 @@ class PerformanceProfiler:
 
         return decorator
 
-    def get_stats(self) -> Dict[str, Dict[str, float]]:
+    def get_stats(self) -> dict[str, dict[str, float]]:
         """Get performance statistics."""
         stats = {}
         for func_name, times in self.timings.items():

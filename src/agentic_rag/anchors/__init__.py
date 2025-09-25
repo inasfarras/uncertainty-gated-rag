@@ -1,2 +1,1 @@
 """Anchor proposal utilities package."""
-

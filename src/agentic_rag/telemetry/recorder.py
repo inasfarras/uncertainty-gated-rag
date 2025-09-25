@@ -3,20 +3,22 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from agentic_rag.config import settings
 
 
 def _ensure_log_dir() -> Path:
     d = Path(
-        (getattr(settings, "log_dir", None) or getattr(settings, "LOG_DIR", None) or "logs")
+        getattr(settings, "log_dir", None)
+        or getattr(settings, "LOG_DIR", None)
+        or "logs"
     )
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def log_round(qid: str, round_idx: int, payload: Dict[str, Any]) -> None:
+def log_round(qid: str, round_idx: int, payload: dict[str, Any]) -> None:
     d = _ensure_log_dir()
     path = d / f"anchor_{qid}.jsonl"
     data = payload.copy()
@@ -26,7 +28,7 @@ def log_round(qid: str, round_idx: int, payload: Dict[str, Any]) -> None:
         f.write(_jsonl_line(data))
 
 
-def log_summary(qid: str, payload: Dict[str, Any]) -> None:
+def log_summary(qid: str, payload: dict[str, Any]) -> None:
     d = _ensure_log_dir()
     path = d / f"anchor_{qid}.jsonl"
     data = payload.copy()

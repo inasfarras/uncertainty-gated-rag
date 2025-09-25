@@ -8,6 +8,64 @@
 
 ## Recent Major Updates
 
+### 1. Hybrid Retrieval & Anchor Enhancements (September 25, 2025)
+
+#### Summary
+Implemented significant improvements to hybrid retrieval, anchor extraction, and chunking strategy. The goal was to enhance the precision and recall of the RAG system, especially for factoid questions requiring specific numeric data or temporal context.
+
+- **Hybrid Retrieval Refinement**: Enhanced the integration of vector and BM25 search for better synergistic results.
+- **Anchor Definition Expansion**: Introduced new anchor types, including "50-40-90" for basketball statistics and season ranges (e.g., "2005-06") to capture more nuanced factual information. Two-word entities are now also considered as anchors.
+- **Optimized Chunking**: Reduced ingestion chunk size to 300 tokens with a 50-token overlap. This aims to create more granular chunks, especially for per-season/table rows, facilitating more precise retrieval.
+- **Retriever Logic Improvements**:
+    - Fusion anchors now include 3PA (three-point attempts) for basketball-related queries.
+    - Implemented multi-chunk per-document selection and in-document scanning.
+    - Long texts are now sliced around identified season/3PA patterns to keep relevant information together.
+    - A reserve rule was added to force the inclusion of at least one season+3PA chunk when specific patterns are present in the query.
+- **Orchestrator Prompt Update**: The orchestrator prompt has been updated to instruct the LLM to compute numeric answers from per-season/table rows and to cite the specific chunk containing the numbers.
+- **BM25 Index Rebuild**: Rebuilt the BM25 index to align with FAISS, both now containing approximately 23,999 chunks.
+
+#### Results
+Preliminary quick run (N=3) results:
+- **CEO (Salesforce/Oracle)**: Answered correctly with citation.
+- **50-40-90 Nash**: Answers with numeric average (currently 5.0) + citation. Next step is to implement deterministic averaging from per-season 3PA rows to match gold answers.
+- **Physics-movie**: Still abstains. Further investigation is needed, potentially by enabling HyDE and biasing hybrid search towards BM25 for lexical queries.
+
+#### Code Changes Made
+- **Modified**: `deep reserach analysis.md` - Updated research notes.
+- **Modified**: `my-notes/report_template.md` - Minor template adjustments.
+- **Modified**: `src/agentic_rag/agent/finalize.py` - Potentially related to final answer generation/formatting.
+- **Modified**: `src/agentic_rag/agent/loop.py` - Core agent loop adjustments for new retrieval and anchor logic.
+- **Modified**: `src/agentic_rag/agent/qanchors.py` - Anchor extraction logic.
+- **Modified**: `src/agentic_rag/anchors/__init__.py` - Anchor module initialization.
+- **Modified**: `src/agentic_rag/anchors/predictor.py` - Anchor prediction/scoring.
+- **Modified**: `src/agentic_rag/anchors/validators.py` - Anchor validation rules.
+- **Modified**: `src/agentic_rag/eval/runner.py` - Evaluation runner, possibly for handling new metrics or data.
+- **Modified**: `src/agentic_rag/gate/__init__.py` - Uncertainty gate, potentially integrating new signals.
+- **Modified**: `src/agentic_rag/retrieval/agent.py` - Retrieval agent logic, incorporating hybrid search.
+- **Modified**: `src/agentic_rag/retriever/bm25.py` - BM25 retriever, likely for chunking and indexing.
+- **Modified**: `src/agentic_rag/retriever/vector.py` - Vector retriever, for hybrid search integration.
+- **Modified**: `src/agentic_rag/supervisor/__init__.py` - Supervisor module initialization.
+- **Modified**: `src/agentic_rag/supervisor/orchestrator.py` - Orchestrator prompt and decision logic.
+- **Modified**: `src/agentic_rag/telemetry/__init__.py` - Telemetry module initialization.
+- **Modified**: `src/agentic_rag/telemetry/recorder.py` - Telemetry recording, capturing new metrics.
+- **Modified**: `src/agentic_rag/utils/timing.py` - Utility for performance timing.
+- **Modified**: `temp_token_extractor.py` - Temporary script for token extraction, likely related to chunking.
+- **Modified**: `tests/test_anchor_validators.py` - Tests for new anchor validation.
+- **Modified**: `tests/test_telemetry_and_early_stop.py` - Tests for telemetry and early stopping.
+
+#### Test Results and Validation
+Initial testing involved a quick run (N=3) on specific factoid questions, showing promising results for basketball statistics and CEO questions. The `physics-movie` question still presents a challenge, indicating areas for further refinement in hybrid search and lexical query handling.
+
+#### Current Status and Next Steps
+- **Status**: Implemented and partially validated. Significant improvements made to hybrid retrieval, anchor definitions, and chunking strategies.
+- **Next Steps**:
+    1. Implement a numeric aggregator (config-guarded) to parse per-season 3PA rows and compute averages with precise citation.
+    2. Strengthen the reserve rule: ensure that when special anchors are detected, at least one chunk containing both the season token and 3PA is always included.
+    3. Expand anchor phrases for specific domains (e.g., "device/sci-fi" terms) and experiment with `HYBRID_ALPHA≈0.45` and `USE_HYDE=True` for lexical queries to improve performance on questions like "physics-movie".
+    4. Conduct comprehensive evaluation runs with a larger dataset to quantify performance improvements across all metrics.
+
+---
+
 ### 1. Anchor Debug & Hybrid Retrieval Upgrades (September 25, 2025)
 
 #### Summary

@@ -1,17 +1,18 @@
-from __future__ import annotations
-
 """Thin, deterministic anchor predictor.
 
 Uses existing question anchor utilities and judge helpers (when available)
 to propose candidate anchors with simple confidence scores.
 """
 
-from typing import Dict, List
+from __future__ import annotations
 
-from agentic_rag.agent.qanchors import extract_required_anchors as q_extract_required_anchors
+# Removed: from typing import Dict, List
+from agentic_rag.agent.qanchors import (
+    extract_required_anchors as q_extract_required_anchors,
+)
 
 
-def propose_anchors(question: str, top_m: int = 6) -> List[Dict]:
+def propose_anchors(question: str, top_m: int = 6) -> list[dict]:
     """Propose anchors from the question with heuristic confidence.
 
     Returns a list of dicts: {text, kind, score} sorted by score desc.
@@ -20,7 +21,7 @@ def propose_anchors(question: str, top_m: int = 6) -> List[Dict]:
     q = (question or "").strip()
     raw = list(q_extract_required_anchors(q))
 
-    out: List[Dict] = []
+    out: list[dict] = []
     for a in raw:
         kind = _classify_anchor(a)
         score = _anchor_confidence(a, kind, question=q)
@@ -50,4 +51,3 @@ def _anchor_confidence(a: str, kind: str, question: str) -> float:
     if (a or "").lower() in (question or "").lower():
         base += 0.1
     return min(0.95, base)
-

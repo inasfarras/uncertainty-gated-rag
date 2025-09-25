@@ -1,4 +1,4 @@
-from agentic_rag.eval.signals import sentence_support, faithfulness_fallback, em_f1
+from agentic_rag.eval.signals import em_f1, faithfulness_fallback, sentence_support
 
 
 def test_idk_is_unsupported_and_faithfulness_zero_when_gold_exists():

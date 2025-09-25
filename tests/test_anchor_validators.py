@@ -1,6 +1,9 @@
-import json
-
-from agentic_rag.anchors.validators import required_anchors, coverage, mismatch_flags, conflict_risk
+from agentic_rag.anchors.validators import (
+    conflict_risk,
+    coverage,
+    mismatch_flags,
+    required_anchors,
+)
 
 
 def test_required_anchors_simple():
@@ -24,4 +27,3 @@ def test_conflict_risk():
     ]
     r = conflict_risk(texts)
     assert 0.1 <= r <= 0.6
-

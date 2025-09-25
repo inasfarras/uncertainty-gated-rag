@@ -1,4 +1,5 @@
-from typing import Iterable, List, Tuple, TypedDict
+from collections.abc import Iterable
+from typing import TypedDict
 
 import tiktoken
 
@@ -9,6 +10,10 @@ class ContextBlock(TypedDict):
     id: str
     text: str
     score: float
+    url: str
+    title: str
+    rank: int
+    fine_sim: float
 
 
 def _encoding():
@@ -29,7 +34,7 @@ def token_count(text: str) -> int:
 def pack_context(
     chunks: Iterable[ContextBlock],
     max_tokens_cap: int | None = None,
-) -> Tuple[List[ContextBlock], int, int]:
+) -> tuple[list[ContextBlock], int, int]:
     """Pack context chunks under a token cap.
 
     Sorts by score desc and drops lowest-score blocks when exceeding the cap.
@@ -40,7 +45,7 @@ def pack_context(
     # Sort descending by score
     sorted_chunks = sorted(chunks, key=lambda c: c.get("score", 0.0), reverse=True)
     total = 0
-    packed: List[ContextBlock] = []
+    packed: list[ContextBlock] = []
     for c in sorted_chunks:
         tks = token_count(c["text"])
         if total + tks > cap:

@@ -1,19 +1,22 @@
-from __future__ import annotations
-
 """Lightweight anchor validators and coverage/mismatch heuristics.
 
 Reuses judge/qanchor utilities when available to avoid duplication.
 """
 
-from typing import Iterable, List, Set, Tuple
+from __future__ import annotations
 
+from collections.abc import Iterable
+
+# Removed: from typing import Dict, List, Set, Tuple
 from agentic_rag.agent.judge import (
     anchors_present_in_texts as judge_anchors_present_in_texts,
+)
+from agentic_rag.agent.judge import (
     extract_required_anchors as judge_extract_required_anchors,
 )
 
 
-def required_anchors(question: str) -> Set[str]:
+def required_anchors(question: str) -> set[str]:
     try:
         return set(judge_extract_required_anchors(question))
     except Exception:
@@ -23,7 +26,7 @@ def required_anchors(question: str) -> Set[str]:
         return set(q_extract(question))
 
 
-def coverage(question: str, texts: Iterable[str]) -> Tuple[float, Set[str], Set[str]]:
+def coverage(question: str, texts: Iterable[str]) -> tuple[float, set[str], set[str]]:
     req = required_anchors(question)
     if not req:
         return 1.0, set(), set()
@@ -111,7 +114,9 @@ def award_tournament_requirements(question: str, texts: Iterable[str]) -> dict:
     tl = "\n".join((t or "").lower() for t in texts)
     is_award = any(tok in ql for tok in AWARD_TOKENS)
     is_tourn = any(tok in ql for tok in TOURNAMENT_TOKENS)
-    requires_year = is_award or is_tourn or (" in " in ql and any(ch.isdigit() for ch in ql))
+    requires_year = (
+        is_award or is_tourn or (" in " in ql and any(ch.isdigit() for ch in ql))
+    )
     requires_category = is_award
 
     import re as _re
@@ -143,10 +148,27 @@ def units_time_requirements(question: str, texts: Iterable[str]) -> dict:
     tl = "\n".join((t or "").lower() for t in texts)
     needs_units = any(tok in ql for tok in ["per game", "%", "percent"])
     needs_time = bool(
-        any(m in ql for m in [
-            " jan ", " feb ", " mar ", " apr ", " may ", " jun ", " jul ", " aug ", " sep ", " oct ", " nov ", " dec ",
-            " q1", " q2", " q3", " q4"
-        ])
+        any(
+            m in ql
+            for m in [
+                " jan ",
+                " feb ",
+                " mar ",
+                " apr ",
+                " may ",
+                " jun ",
+                " jul ",
+                " aug ",
+                " sep ",
+                " oct ",
+                " nov ",
+                " dec ",
+                " q1",
+                " q2",
+                " q3",
+                " q4",
+            ]
+        )
         or any(ch.isdigit() for ch in ql)
     )
 

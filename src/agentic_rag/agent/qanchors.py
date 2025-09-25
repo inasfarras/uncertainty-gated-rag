@@ -8,12 +8,16 @@ Judge utilities when available to avoid duplication.
 from __future__ import annotations
 
 import re
-from typing import Iterable, Set
+from collections.abc import Iterable
+
+# Removed: from typing import List, Set
 
 try:
     # Prefer Judge versions if present
     from agentic_rag.agent.judge import (
         anchors_present_in_texts as _judge_anchors_present_in_texts,  # type: ignore
+    )
+    from agentic_rag.agent.judge import (
         extract_required_anchors as _judge_extract_required_anchors,  # type: ignore
     )
 except Exception:  # pragma: no cover
@@ -21,7 +25,7 @@ except Exception:  # pragma: no cover
     _judge_extract_required_anchors = None  # type: ignore
 
 
-def extract_required_anchors(q: str) -> Set[str]:
+def extract_required_anchors(q: str) -> set[str]:
     """Extract simple temporal/units/event/entity anchors from a question."""
     if _judge_extract_required_anchors is not None:  # reuse richer logic
         try:
@@ -30,14 +34,16 @@ def extract_required_anchors(q: str) -> Set[str]:
             pass
 
     ql = (q or "").lower()
-    anchors: Set[str] = set()
+    anchors: set[str] = set()
     # years
     anchors.update(re.findall(r"\b(?:19|20)\d{2}\b", ql))
     # scoreline triples like 50-40-90 or 50/40/90
     anchors.update(re.findall(r"\b\d{2}[-\/]\d{2}[-\/]\d{2}\b", ql))
     # quarters / months
     anchors.update(re.findall(r"\bq[1-4]\b", ql))
-    anchors.update(re.findall(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b", ql))
+    anchors.update(
+        re.findall(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b", ql)
+    )
     # units/time phrases
     for tok in [
         "per game",
@@ -118,25 +124,36 @@ def extract_required_anchors(q: str) -> Set[str]:
     return anchors
 
 
-def anchors_present_in_texts(texts: Iterable[str], anchors: Set[str]) -> Set[str]:
+def anchors_present_in_texts(texts: Iterable[str], anchors: set[str]) -> set[str]:
     """Return subset of anchors present across any of the texts."""
+    present_anchors: set[str] = set()
     if _judge_anchors_present_in_texts is not None:
         try:
-            present, _ = _judge_anchors_present_in_texts(set(anchors), list(texts))  # type: ignore
-            return present
+            _present_anchors, _ = _judge_anchors_present_in_texts(set(anchors), list(texts))  # type: ignore
+            present_anchors = _present_anchors
         except Exception:
             pass
-    present: Set[str] = set()
     tl = "\n".join((t or "").lower() for t in texts)
     for a in anchors:
         if a.lower() in tl:
-            present.add(a)
-    return present
+            present_anchors.add(a)
+    return present_anchors
 
 
 def is_factoid(q: str) -> bool:
     ql = (q or "").lower()
-    if any(t in ql for t in ["how many", "how much", "what year", "when", "date", "per game", "ex-dividend"]):
+    if any(
+        t in ql
+        for t in [
+            "how many",
+            "how much",
+            "what year",
+            "when",
+            "date",
+            "per game",
+            "ex-dividend",
+        ]
+    ):
         return True
     if re.search(r"\b(19|20)\d{2}\b", ql):
         return True
