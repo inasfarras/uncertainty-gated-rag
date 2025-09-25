@@ -8,9 +8,7 @@ Optionally accepts a KG handle in the future.
 
 from typing import Any, TypedDict
 
-
 import numpy as np
-
 from agentic_rag.config import settings
 from agentic_rag.embed.encoder import embed_texts
 from agentic_rag.retriever.vector import VectorRetriever

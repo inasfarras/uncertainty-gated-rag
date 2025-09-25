@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-# Removed: from typing import Dict, List, Set, Tuple
 from agentic_rag.agent.judge import (
     anchors_present_in_texts as judge_anchors_present_in_texts,
 )

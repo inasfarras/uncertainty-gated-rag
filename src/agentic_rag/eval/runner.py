@@ -4,7 +4,7 @@ import re
 import string
 import time
 from pathlib import Path
-from typing import Literal, Optional, cast
+from typing import Any, Literal, Optional, cast
 
 import pandas as pd
 import typer
@@ -200,7 +200,7 @@ def run(
         questions = questions[:n]
 
     # Select system
-    model: Agent | Baseline | AnchorSystem  # Use Union for explicit typing
+    model: Any
     if system == "agent":
         model = Agent(gate_on=gate_on, debug_mode=debug_prompts)
     elif system == "baseline":
@@ -211,11 +211,15 @@ def run(
         console.print(f"[bold red]Unknown system: {system}[/bold red]")
         raise typer.Exit(1)
 
-    # Agent uses UncertaintyGate; Anchor uses BAUG (external or UncertaintyGate fallback)
+    # Agent uses UncertaintyGate; Anchor uses BAUG (or can be turned OFF via gate flag)
     if system == "agent":
         gate_note = "ON" if gate_on else "OFF"
     elif system == "anchor":
-        gate_note = "BAUG"
+        # Allow gate flag to control Anchor gate, too
+        from agentic_rag.config import settings as _settings
+
+        _settings.ANCHOR_GATE_ON = bool(gate_on)
+        gate_note = "BAUG" if _settings.ANCHOR_GATE_ON else "OFF"
     else:
         gate_note = "N/A"
     console.print(

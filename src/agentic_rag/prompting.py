@@ -10,10 +10,6 @@ class ContextBlock(TypedDict):
     id: str
     text: str
     score: float
-    url: str
-    title: str
-    rank: int
-    fine_sim: float
 
 
 def _encoding():

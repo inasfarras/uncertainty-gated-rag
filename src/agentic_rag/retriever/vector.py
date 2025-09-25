@@ -19,10 +19,6 @@ class ContextChunk(TypedDict):
     id: str
     text: str
     score: float
-    url: str
-    title: str
-    rank: int
-    fine_sim: float
 
 
 class Candidate(TypedDict):
@@ -650,15 +646,7 @@ class VectorRetriever:
                     end = min(len(t), center + span)
                     t = t[start:end]
             blocks.append(
-                {
-                    "id": candidate["chunk_id"],
-                    "text": t,
-                    "score": candidate["score"],
-                    "url": "",
-                    "title": "",
-                    "rank": 0,
-                    "fine_sim": 0.0,
-                }
+                {"id": candidate["doc_id"], "text": t, "score": candidate["score"]}
             )
             retrieved_ids.append(candidate["doc_id"])
 
@@ -685,15 +673,7 @@ class VectorRetriever:
                             r"[^A-Za-z0-9_\-]", "_", chunk_id.split("__")[0]
                         )
                         blocks.append(
-                            {
-                                "id": doc_id,
-                                "text": text,
-                                "score": float(score) + 0.1,
-                                "url": "",
-                                "title": "",
-                                "rank": 0,
-                                "fine_sim": 0.0,
-                            }
+                            {"id": doc_id, "text": text, "score": float(score) + 0.1}
                         )
                         retrieved_ids.append(doc_id)
                         break
@@ -739,17 +719,7 @@ class VectorRetriever:
             # Ensure that the text is always available in the ContextChunk
             if chunk_id in self.chunks.index:
                 text = self.chunks.loc[chunk_id, "text"]
-                out.append(
-                    {
-                        "id": chunk_id,
-                        "text": text,
-                        "score": score,
-                        "url": "",
-                        "title": "",
-                        "rank": 0,
-                        "fine_sim": 0.0,
-                    }
-                )
+                out.append({"id": chunk_id, "text": text, "score": score})
             else:
                 print(
                     f"Warning: Chunk ID {chunk_id} not found in index during retrieve."

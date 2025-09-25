@@ -10,8 +10,6 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-# Removed: from typing import List, Set
-
 try:
     # Prefer Judge versions if present
     from agentic_rag.agent.judge import (
@@ -126,13 +124,13 @@ def extract_required_anchors(q: str) -> set[str]:
 
 def anchors_present_in_texts(texts: Iterable[str], anchors: set[str]) -> set[str]:
     """Return subset of anchors present across any of the texts."""
-    present_anchors: set[str] = set()
     if _judge_anchors_present_in_texts is not None:
         try:
-            _present_anchors, _ = _judge_anchors_present_in_texts(set(anchors), list(texts))  # type: ignore
-            present_anchors = _present_anchors
+            present, _ = _judge_anchors_present_in_texts(set(anchors), list(texts))  # type: ignore
+            return present
         except Exception:
             pass
+    present_anchors: set[str] = set()
     tl = "\n".join((t or "").lower() for t in texts)
     for a in anchors:
         if a.lower() in tl:

@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     USE_HYBRID_SEARCH: bool = True
     HYBRID_ALPHA: float = 0.7  # Weight for vector vs BM25 (0.7 = 70% vector, 30% BM25)
     ANCHOR_BONUS: float = 0.07  # Score bonus for candidates containing question anchors
+    # Anchor orchestrator gate toggle
+    ANCHOR_GATE_ON: bool = True
     # Lean-agent controls
     FACTOID_ONE_SHOT_RETRIEVAL: bool = True
     FACTOID_MIN_TOKENS_LEFT: int = 300

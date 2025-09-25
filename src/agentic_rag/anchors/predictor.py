@@ -6,7 +6,6 @@ to propose candidate anchors with simple confidence scores.
 
 from __future__ import annotations
 
-# Removed: from typing import Dict, List
 from agentic_rag.agent.qanchors import (
     extract_required_anchors as q_extract_required_anchors,
 )
