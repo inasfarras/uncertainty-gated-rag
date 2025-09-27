@@ -1,5 +1,4 @@
 import os
-from typing import List, Tuple
 
 import faiss
 import numpy as np
@@ -11,7 +10,7 @@ class FaissStore:
         self.index = index
         self.meta = meta.set_index("id")
 
-    def search(self, qvec: np.ndarray, k: int) -> List[Tuple[str, float]]:
+    def search(self, qvec: np.ndarray, k: int) -> list[tuple[str, float]]:
         distances, indices = self.index.search(
             qvec.reshape(1, -1).astype(np.float32), k
         )

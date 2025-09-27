@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-from typing import Dict, List
 
 from agentic_rag.eval.signals import (
     extract_citations,
@@ -14,9 +13,9 @@ from agentic_rag.eval.signals import (
 def log_debug_info(
     qid: str,
     question: str,
-    prompt_messages: List[Dict[str, str]],
+    prompt_messages: list[dict[str, str]],
     answer: str,
-    context_ids: List[str],
+    context_ids: list[str],
     debug_dir: Path = Path("logs/debug"),
 ) -> None:
     """Log debug information for citation analysis."""

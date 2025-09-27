@@ -1,4 +1,4 @@
-from agentic_rag.eval.signals import sentence_support, faithfulness_fallback, em_f1
+from agentic_rag.eval.signals import em_f1, faithfulness_fallback, sentence_support
 
 
 def test_idk_is_unsupported_and_faithfulness_zero_when_gold_exists():
@@ -16,4 +16,3 @@ def test_supported_sentence_with_valid_citation_counts():
     assert sup["overlap"] == 1.0
     ef = em_f1(ans, gold="Tenet is a film directed by Christopher Nolan.")
     assert 0.0 <= ef["f1"] <= 1.0
-

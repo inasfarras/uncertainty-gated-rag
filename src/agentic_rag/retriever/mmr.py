@@ -5,59 +5,87 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import torch
 
-
-def _cos(a: np.ndarray, b: np.ndarray) -> float:
-    """Compute cosine similarity between two L2-normalized vectors."""
-    return float(np.dot(a, b))
+from agentic_rag.prompting import ContextBlock, pack_context
 
 
 def mmr_select(
-    q_emb: np.ndarray,
+    query_embedding: np.ndarray,
     candidates: list[dict[str, Any]],
     k: int,
-    lambda_div: float = 0.4,
+    lambda_mult: float,
 ) -> list[dict[str, Any]]:
-    """
-    Select k items using Maximal Marginal Relevance to balance relevance and diversity.
-
-    Args:
-        q_emb: Query embedding (L2-normalized)
-        candidates: List of candidate documents with 'emb' field containing L2-normalized embeddings
-        k: Number of items to select
-        lambda_div: Diversity parameter (0.0 = pure diversity, 1.0 = pure relevance)
-
-    Returns:
-        List of selected candidates maximizing MMR = λ * sim(q, d) - (1-λ) * max_j sim(d, d_j_selected)
-    """
-    if not candidates or k <= 0:
+    """Select k candidates from a list using Maximal Marginal Relevance (MMR)."""
+    if not candidates:
         return []
 
-    selected: list[dict[str, Any]] = []
-    pool = candidates.copy()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Seed with best by query similarity
-    pool.sort(key=lambda x: _cos(q_emb, x["emb"]), reverse=True)
-    selected.append(pool.pop(0))
+    query_embedding_t = torch.from_numpy(query_embedding).to(device)
+    candidate_embeddings_t = torch.from_numpy(
+        np.array([c["emb"] for c in candidates])
+    ).to(device)
 
-    # Greedily select remaining items
-    while pool and len(selected) < k:
-        best_idx, best_mmr = 0, -1e9
-        selected_embs = [s["emb"] for s in selected]
+    # Calculate similarity between query and all candidates
+    query_candidate_similarity = torch.matmul(
+        candidate_embeddings_t, query_embedding_t
+    ).cpu()
 
-        for i, candidate in enumerate(pool):
-            # Relevance: similarity to query
-            relevance = _cos(q_emb, candidate["emb"])
+    # Find the best candidate to start with
+    best_candidate_idx = torch.argmax(query_candidate_similarity).item()
 
-            # Redundancy: max similarity to already selected items
-            redundancy = max(_cos(candidate["emb"], s_emb) for s_emb in selected_embs)
+    selected_candidates = [candidates[best_candidate_idx]]
+    selected_indices = {best_candidate_idx}
 
-            # MMR score
-            mmr = lambda_div * relevance - (1.0 - lambda_div) * redundancy
+    while len(selected_candidates) < min(k, len(candidates)):
+        best_candidate_idx_to_add = -1
 
-            if mmr > best_mmr:
-                best_mmr, best_idx = mmr, i
+        candidate_indices = [
+            i for i in range(len(candidates)) if i not in selected_indices
+        ]
+        if not candidate_indices:
+            break
 
-        selected.append(pool.pop(best_idx))
+        unselected_embeddings_t = candidate_embeddings_t[candidate_indices]
+        selected_embeddings_t = candidate_embeddings_t[list(selected_indices)]
 
-    return selected
+        # Calculate similarity between unselected and selected candidates
+        sim_to_selected = torch.matmul(unselected_embeddings_t, selected_embeddings_t.T)
+        max_sim_to_selected, _ = torch.max(sim_to_selected, dim=1)
+        max_sim_to_selected = max_sim_to_selected.cpu()
+
+        # Corresponding query similarities
+        sim_to_query = query_candidate_similarity[candidate_indices]
+
+        # MMR score calculation
+        mmr_scores = (
+            lambda_mult * sim_to_query - (1 - lambda_mult) * max_sim_to_selected
+        )
+
+        best_idx_in_unselected = torch.argmax(mmr_scores).item()
+        best_candidate_idx_to_add = candidate_indices[best_idx_in_unselected]
+
+        if best_candidate_idx_to_add != -1:
+            selected_candidates.append(candidates[best_candidate_idx_to_add])
+            selected_indices.add(best_candidate_idx_to_add)
+        else:
+            break
+
+    return selected_candidates
+
+
+def mmr_pack_context(
+    blocks: list[ContextBlock], max_tokens_cap: int, mmr_lambda: float
+) -> tuple[list[ContextBlock], int, int]:
+    """Pack context blocks using MMR for diversity."""
+    # This is a placeholder. For now, we'll just use the default packing.
+    # A full implementation would require embeddings for each block.
+
+    # Cast the list of dicts to a list of ContextBlock to satisfy mypy
+    context_blocks = blocks
+
+    packed_blocks, total_tokens, n_blocks = pack_context(context_blocks, max_tokens_cap)
+
+    # Cast back to list of dicts for the return type
+    return packed_blocks, total_tokens, n_blocks

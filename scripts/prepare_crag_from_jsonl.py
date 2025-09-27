@@ -51,9 +51,11 @@ def main():
     skipped_short = 0
     skipped_dynamic = 0
 
-    with open_text_maybe_bz2(Path(args.src)) as fin, open(
-        args.qs_file, "w", encoding="utf-8"
-    ) as qf, open(args.meta_file, "w", encoding="utf-8") as mf:
+    with (
+        open_text_maybe_bz2(Path(args.src)) as fin,
+        open(args.qs_file, "w", encoding="utf-8") as qf,
+        open(args.meta_file, "w", encoding="utf-8") as mf,
+    ):
         for idx, line in enumerate(fin):
             if args.n and questions_exported >= args.n:
                 break

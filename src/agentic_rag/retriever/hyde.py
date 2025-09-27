@@ -55,7 +55,27 @@ def hyde_query(
         return None
 
 
-def should_use_hyde(round_idx: int, use_hyde_setting: bool) -> bool:
+def is_factoid(question: str) -> bool:
+    q = (question or "").lower()
+    # Simple cues for precise factoid questions
+    return any(
+        tok in q
+        for tok in [
+            "when",
+            "what year",
+            "which",
+            "how many",
+            "how long",  # Added for factoid detection
+            "date",
+            "per game",
+            "ex-dividend",
+        ]
+    )
+
+
+def should_use_hyde(
+    round_idx: int, use_hyde_setting: bool, question: str | None = None
+) -> bool:
     """
     Determine if HyDE should be used for this round.
 
@@ -66,5 +86,8 @@ def should_use_hyde(round_idx: int, use_hyde_setting: bool) -> bool:
     Returns:
         True if HyDE should be used
     """
-    # Only use HyDE on RETRIEVE_MORE (round > 0) and if enabled
-    return use_hyde_setting and round_idx > 0
+    # Only use HyDE on RETRIEVE_MORE (round > 0) and if enabled,
+    # and avoid it for precise factoids to preserve retrieval precision.
+    if not use_hyde_setting or round_idx == 0 or (question and is_factoid(question)):
+        return False
+    return True

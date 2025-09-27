@@ -1,12 +1,29 @@
 import json
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, cast
+from typing import Any, cast
 
 import numpy as np
 import typer
 
+from agentic_rag.agent import finalize as finalize_utils
 from agentic_rag.agent.gate import GateAction, GateSignals, make_gate
+from agentic_rag.agent.judge import (
+    anchors_present_in_texts,
+    create_judge,
+    create_query_transformer,
+    extract_required_anchors,
+    validate_factoid_anchors,
+)
+from agentic_rag.agent.qanchors import (
+    anchors_present_in_texts as q_anchors_present_in_texts,
+)
+from agentic_rag.agent.qanchors import (
+    extract_required_anchors as q_extract_required_anchors,
+)
+from agentic_rag.agent.qanchors import (
+    is_factoid as q_is_factoid,
+)
 from agentic_rag.config import settings
 from agentic_rag.eval.signals import (
     CIT_RE,
@@ -22,46 +39,227 @@ from agentic_rag.utils.encoder import NpEncoder
 from agentic_rag.utils.timing import timer
 
 
-def _assess_lexical_uncertainty(response: str) -> float:
-    """Assess lexical uncertainty based on confidence/uncertainty keywords."""
+def _assess_lexical_uncertainty(response: str, use_cache: bool = True) -> float:
+    """Enhanced lexical uncertainty assessment with caching and semantic analysis."""
+    if not response or len(response.strip()) < 3:
+        return 1.0
+
+    # Cache key for performance
+    cache_key = hash(response) if use_cache else None
+    if cache_key and hasattr(_assess_lexical_uncertainty, "_cache"):
+        if cache_key in _assess_lexical_uncertainty._cache:
+            return _assess_lexical_uncertainty._cache[cache_key]
+
     response_lower = response.lower()
-    uncertainty_keywords = [
-        "might",
-        "maybe",
-        "perhaps",
-        "possibly",
-        "likely",
-        "probably",
-        "seems",
-        "appears",
-        "suggests",
-        "indicates",
-        "unclear",
-        "uncertain",
-        "not sure",
-        "don't know",
-        "can't say",
-        "difficult to determine",
-    ]
-    uncertainty_count = sum(
-        response_lower.count(keyword) for keyword in uncertainty_keywords
-    )
-    # Simple heuristic: presence of keywords maps to uncertainty score
-    return min(1.0, uncertainty_count * 0.25)
+    words = response_lower.split()
+    total_words = len(words)
+
+    if total_words == 0:
+        return 1.0
+
+    # Enhanced uncertainty keywords with weights
+    uncertainty_indicators = {
+        # High uncertainty
+        "might": 0.8,
+        "maybe": 0.8,
+        "perhaps": 0.7,
+        "possibly": 0.7,
+        "unclear": 0.9,
+        "uncertain": 0.9,
+        "unsure": 0.8,
+        "don't know": 1.0,
+        "can't say": 0.9,
+        "not sure": 0.8,
+        # Medium uncertainty
+        "likely": 0.5,
+        "probably": 0.5,
+        "seems": 0.6,
+        "appears": 0.6,
+        "suggests": 0.4,
+        "indicates": 0.4,
+        "could be": 0.6,
+        # Hedging
+        "somewhat": 0.3,
+        "rather": 0.3,
+        "quite": 0.2,
+        "fairly": 0.3,
+    }
+
+    confidence_indicators = {
+        "definitely": -0.8,
+        "certainly": -0.7,
+        "clearly": -0.6,
+        "obviously": -0.6,
+        "undoubtedly": -0.8,
+        "absolutely": -0.9,
+        "precisely": -0.7,
+        "exactly": -0.7,
+        "specifically": -0.5,
+    }
+
+    uncertainty_score = 0.0
+
+    # Check for uncertainty phrases
+    for phrase, weight in uncertainty_indicators.items():
+        if phrase in response_lower:
+            uncertainty_score += weight
+
+    # Check for confidence phrases (reduce uncertainty)
+    for phrase, weight in confidence_indicators.items():
+        if phrase in response_lower:
+            uncertainty_score += weight  # weight is negative
+
+    # Normalize by response length (longer responses might have more indicators)
+    uncertainty_score = uncertainty_score / max(1, total_words / 20)
+
+    # Question marks might indicate uncertainty
+    question_marks = response.count("?")
+    if question_marks > 0:
+        uncertainty_score += min(0.3, question_marks * 0.1)
+
+    # Cache result
+    if cache_key:
+        if not hasattr(_assess_lexical_uncertainty, "_cache"):
+            _assess_lexical_uncertainty._cache = {}  # type: ignore
+        _assess_lexical_uncertainty._cache[cache_key] = min(  # type: ignore
+            1.0, max(0.0, uncertainty_score)
+        )
+
+    return min(1.0, max(0.0, uncertainty_score))
 
 
 def _assess_response_completeness(response: str) -> float:
-    """Assess response completeness, where 1.0 is complete."""
-    # Simple heuristic: very short responses might indicate uncertainty
-    if len(response.strip()) < 20:
-        return 0.2  # Low completeness
-    # Incomplete sentences or trailing indicators
-    if not response.strip().endswith((".", "?", "!", "]")):
+    """Enhanced response completeness assessment."""
+    if not response or len(response.strip()) < 3:
+        return 0.0
+
+    response = response.strip()
+    length = len(response)
+
+    # Length-based scoring (more nuanced)
+    if length < 10:
+        length_score = 0.1
+    elif length < 30:
+        length_score = 0.4
+    elif length < 100:
+        length_score = 0.8
+    else:
+        length_score = 1.0
+
+    # Sentence structure scoring
+    sentences = [s.strip() for s in response.split(".") if s.strip()]
+    if not sentences:
+        structure_score = 0.2
+    else:
+        # Check for complete sentences
+        complete_sentences = sum(1 for s in sentences if len(s) > 5 and " " in s)
+        structure_score = min(1.0, complete_sentences / max(1, len(sentences)))
+
+    # Punctuation completeness
+    punct_score = 1.0 if response.endswith((".", "!", "?", "]")) else 0.6
+
+    # Check for abrupt endings or incomplete thoughts
+    incomplete_indicators = ["...", "etc.", "and so on", "among others"]
+    if any(indicator in response.lower() for indicator in incomplete_indicators):
+        punct_score *= 0.8
+
+    # Combine scores
+    completeness = length_score * 0.4 + structure_score * 0.4 + punct_score * 0.2
+    return min(1.0, completeness)
+
+
+def _assess_semantic_coherence(response: str, question: str = "") -> float:
+    """Assess semantic coherence of the response."""
+    if not response or len(response.strip()) < 10:
+        return 0.0
+
+    # Simple coherence indicators
+    sentences = [s.strip() for s in response.split(".") if s.strip()]
+    if len(sentences) < 2:
+        return 0.8  # Single sentence, assume coherent
+
+    # Check for contradictory statements
+    contradictory_patterns = [
+        ("yes", "no"),
+        ("true", "false"),
+        ("correct", "incorrect"),
+        ("is", "is not"),
+        ("can", "cannot"),
+        ("will", "will not"),
+    ]
+
+    response_lower = response.lower()
+    contradiction_penalty = 0.0
+
+    for pos, neg in contradictory_patterns:
+        if pos in response_lower and neg in response_lower:
+            contradiction_penalty += 0.2
+
+    # Check for logical flow indicators
+    flow_indicators = [
+        "however",
+        "therefore",
+        "consequently",
+        "furthermore",
+        "moreover",
+        "additionally",
+        "in contrast",
+        "similarly",
+    ]
+
+    flow_bonus = min(
+        0.2, sum(0.05 for indicator in flow_indicators if indicator in response_lower)
+    )
+
+    # Base coherence score
+    base_score = 0.7
+    coherence = base_score + flow_bonus - contradiction_penalty
+
+    return min(1.0, max(0.0, coherence))
+
+
+def _assess_question_complexity(question: str) -> float:
+    """Assess question complexity to adapt gate behavior."""
+    if not question:
         return 0.5
-    return 1.0
+
+    question_lower = question.lower()
+    words = question_lower.split()
+
+    # Length-based complexity
+    length_complexity = min(1.0, len(words) / 30)
+
+    # Complex question indicators
+    complex_indicators = [
+        "compare",
+        "contrast",
+        "analyze",
+        "evaluate",
+        "synthesize",
+        "explain why",
+        "how does",
+        "what are the implications",
+        "multiple",
+        "various",
+        "different",
+        "relationship between",
+    ]
+
+    complexity_score = sum(
+        0.1 for indicator in complex_indicators if indicator in question_lower
+    )
+
+    # Question type complexity
+    if any(word in question_lower for word in ["why", "how", "explain"]):
+        complexity_score += 0.2
+    elif any(word in question_lower for word in ["what", "when", "where", "who"]):
+        complexity_score += 0.1
+
+    return min(1.0, length_complexity * 0.3 + complexity_score * 0.7)
 
 
 def is_global_question(q: str) -> bool:
+    """Determine if question requires global/comprehensive knowledge."""
     try:
         import spacy
 
@@ -74,7 +272,7 @@ def is_global_question(q: str) -> bool:
 
 def build_prompt(
     contexts: list[dict[str, Any]], question: str
-) -> tuple[List[ChatMessage], str]:
+) -> tuple[list[ChatMessage], str]:
     """Builds a prompt for the LLM and returns messages and a debug string."""
     # Render context blocks
     context_blocks = []
@@ -84,7 +282,7 @@ def build_prompt(
 
     system_content = build_system_instructions()
 
-    user_content = f"QUESTION:\n{question}\n\n" f"CONTEXT:\n{context_str}"
+    user_content = f"QUESTION:\n{question}\n\nCONTEXT:\n{context_str}"
 
     debug_prompt = f"SYSTEM:\n{system_content}\n\n{user_content}"
     return [
@@ -93,7 +291,7 @@ def build_prompt(
     ], debug_prompt
 
 
-def _normalize_answer(text: str, allowed_ids: List[str]) -> str:
+def _normalize_answer(text: str, allowed_ids: list[str]) -> str:
     # Enforce that IDK carries no citations or extra text
     tstrip = (text or "").strip()
     if is_idk(tstrip) or tstrip.lower().startswith("i don't know"):
@@ -112,7 +310,7 @@ def _normalize_answer(text: str, allowed_ids: List[str]) -> str:
         return text
 
 
-def _should_force_idk(question: str, context_texts: List[str]) -> bool:
+def _should_force_idk(question: str, context_texts: list[str]) -> bool:
     """Heuristic: prefer abstain for underspecified superlatives/temporal questions.
 
     Returns True if we should force "I don't know" given the question and provided contexts.
@@ -120,7 +318,7 @@ def _should_force_idk(question: str, context_texts: List[str]) -> bool:
     q = (question or "").lower()
     ctx = (" \n".join(context_texts or [])).lower()
 
-    def any_in(s: str, terms: List[str]) -> bool:
+    def any_in(s: str, terms: list[str]) -> bool:
         return any(t in s for t in terms)
 
     superlative_terms = [
@@ -245,19 +443,41 @@ class BaseAgent:
         self.debug_mode = debug_mode
         self.retriever = VectorRetriever(settings.FAISS_INDEX_PATH)
         self.llm = OpenAIAdapter()
-        self.log_dir = Path("logs")
+        # Use configurable log directory
+        # Prefer new lowercase setting; fallback to legacy uppercase; then default
+        self.log_dir = Path(
+            getattr(settings, "log_dir", None)
+            or getattr(settings, "LOG_DIR", None)
+            or "logs"
+        )
         self.log_dir.mkdir(exist_ok=True)
 
-    def _log_jsonl(self, data: Dict[str, Any], log_path: Path):
+    def _log_jsonl(self, data: dict[str, Any], log_path: Path):
         with open(log_path, "a") as f:
             f.write(json.dumps(data, cls=NpEncoder) + "\n")
 
 
 class Baseline(BaseAgent):
     def __init__(self, debug_mode: bool = False):
+        # Enforce a "vanilla" baseline configuration:
+        # - FAISS-only (no hybrid BM25), no rerank, no MMR diversification
+        # - Small probe factor so retrieval pool ~= top_k
+        # - Keep k=8 and ~1k context cap
+        try:
+            settings.USE_RERANK = False
+            settings.MMR_LAMBDA = 0.0
+            settings.USE_HYBRID_SEARCH = False
+            settings.PROBE_FACTOR = 1
+            settings.RETRIEVAL_K = 8
+            # Clamp to a ~1k cap to ensure comparable packing
+            settings.MAX_CONTEXT_TOKENS = 1000
+        except Exception:
+            # If settings is immutable for any reason, proceed with defaults
+            pass
+
         super().__init__(system="baseline", debug_mode=debug_mode)
 
-    def answer(self, question: str, qid: str | None = None) -> Dict[str, Any]:
+    def answer(self, question: str, qid: str | None = None) -> dict[str, Any]:
         qid = qid or str(uuid.uuid4())
         log_path = self.log_dir / f"{self.system}_{qid}.jsonl"
 
@@ -357,8 +577,10 @@ class Agent(BaseAgent):
         super().__init__(system="agent", debug_mode=debug_mode)
         self.gate_on = gate_on
         self.gate = make_gate(settings)
+        self.judge = create_judge(self.llm, settings)
+        self.query_transformer = create_query_transformer(self.llm)
 
-    def answer(self, question: str, qid: str | None = None) -> Dict[str, Any]:
+    def answer(self, question: str, qid: str | None = None) -> dict[str, Any]:
         qid = qid or str(uuid.uuid4())
         log_path = self.log_dir / f"{self.system}_{qid}.jsonl"
 
@@ -376,12 +598,19 @@ class Agent(BaseAgent):
         draft = ""
         prev_overlap: float = 0.0
         prev_top_ids: set[str] = set()
-        EPS_OVERLAP = 0.02
+        EPS_OVERLAP = settings.EPSILON_OVERLAP
         # Min ratio of new docs in retrieved set to continue
         MIN_NEW_HITS_RATIO = 0.2
         # Max allowed similarity between consecutive retrieved sets
         MAX_JACCARD_SIM = 0.8
         has_reflect_left = True
+        # Defaults for metrics in case no generation occurs
+        f: float = 0.0
+        o: float = 0.0
+        faith_ragas = None  # type: ignore[assignment]
+        faith_fallback: float = 0.6
+        action = "INIT"
+        used_judge = False
 
         print(f"⚙️  Config: MAX_ROUNDS={settings.MAX_ROUNDS}, GATE=UncertaintyGate")
         print(
@@ -408,8 +637,10 @@ class Agent(BaseAgent):
             )
             if stats.get("used_hyde"):
                 print("🔮 HyDE query rewriting applied")
+            if stats.get("used_hybrid"):
+                print("🔍 Hybrid search (Vector + BM25) applied")
             if stats.get("used_rerank"):
-                print("🏆 BGE reranking applied")
+                print("🏆 BGE cross-encoder reranking applied")
             if stats.get("used_mmr"):
                 print("🎯 MMR diversification applied")
 
@@ -463,8 +694,135 @@ class Agent(BaseAgent):
                 prev_top_ids = curr_top_ids
                 break
 
-            # Update seen docs after novelty check
-            seen_doc_ids.update(retrieved_ids)
+            # Optional: Pre-generation Judge to assess context sufficiency
+            used_judge = False
+            judge_assessment = None
+            if getattr(settings, "JUDGE_PREGEN", True):
+                print("🧠 Pre-generation Judge: assessing context sufficiency...")
+                judge_assessment = self.judge.assess_context_sufficiency(
+                    question, contexts, round_idx=r - 1
+                )
+                used_judge = True
+                print(
+                    f"🧠 Judge (pre-gen): sufficient={judge_assessment.is_sufficient}, "
+                    f"conf={judge_assessment.confidence:.2f}, action={judge_assessment.suggested_action}"
+                )
+
+                # If clearly insufficient, optionally try transformation or skip generation for this round
+                if (not judge_assessment.is_sufficient) and (
+                    judge_assessment.confidence > 0.7
+                ):
+                    did_transform = False
+                    if (
+                        judge_assessment.suggested_action == "TRANSFORM_QUERY"
+                        and r == 1
+                    ):
+                        print(
+                            "🔄 Judge suggests transformation (pre-gen). Trying remedial retrieval..."
+                        )
+                        transformations = self.query_transformer.transform_query(
+                            question, judge_assessment, contexts
+                        )
+                        if transformations:
+                            for i, transformed_query in enumerate(transformations[:2]):
+                                print(
+                                    f"🔄 [Pre-gen] Transformation {i + 1}: {transformed_query[:80]}..."
+                                )
+                                transform_contexts, transform_stats = (
+                                    self.retriever.retrieve_pack(
+                                        transformed_query,
+                                        k=k,
+                                        exclude_doc_ids=seen_doc_ids,
+                                        probe_factor=settings.PROBE_FACTOR,
+                                        round_idx=r,
+                                        llm_client=self.llm,
+                                    )
+                                )
+                                transform_ids = cast(
+                                    list[str], transform_stats.get("retrieved_ids", [])
+                                )
+                                new_transform_hits = [
+                                    d for d in transform_ids if d not in seen_doc_ids
+                                ]
+                                if new_transform_hits:
+                                    print(
+                                        f"🔄 [Pre-gen] Transformation {i + 1} added {len(new_transform_hits)} new contexts"
+                                    )
+                                    contexts.extend(transform_contexts[:3])
+                                    seen_doc_ids.update(new_transform_hits)
+                                    enhanced_judge = (
+                                        self.judge.assess_context_sufficiency(
+                                            question, contexts, round_idx=r - 1
+                                        )
+                                    )
+                                    if enhanced_judge.is_sufficient:
+                                        print(
+                                            "✅ [Pre-gen] Contexts now sufficient after transformation"
+                                        )
+                                        judge_assessment = enhanced_judge
+                                        did_transform = True
+                                        break
+                    if not did_transform:
+                        if r < settings.MAX_ROUNDS:
+                            # Skip generation and go retrieve more next round
+                            action = GateAction.RETRIEVE_MORE
+                            step_log = {
+                                "qid": qid,
+                                "round": r,
+                                "action": "SKIP_GEN_RETRIEVE",
+                                "k": k,
+                                "mode": mode,
+                                "tokens_left": tokens_left,
+                                "usage": None,
+                                "latency_ms": 0,
+                                "retrieved_ids": retrieved_ids,
+                                "new_hits": new_hits,
+                                "has_new_hits": has_new_hits,
+                                "new_hits_ratio": new_hits_ratio,
+                                "jaccard": jaccard_sim,
+                                "n_ctx_blocks": stats.get("n_ctx_blocks"),
+                                "context_tokens": stats.get("context_tokens"),
+                                "reason": "PREGEN_JUDGE_INSUFFICIENT",
+                                "used_gate": "uncertainty",
+                            }
+                            self._log_jsonl(step_log, log_path)
+                            # Prepare for next round
+                            k = min(32, k + 4)
+                            prev_top_ids = curr_top_ids
+                            print(
+                                f"⏭️  Skipping generation this round due to insufficient context; next k={k}"
+                            )
+                            continue
+                        else:
+                            # Last round and still insufficient: abstain to produce a stable summary
+                            draft = "I don't know"
+                            f = 0.0
+                            o = 0.0
+                            action = GateAction.ABSTAIN
+                            step_log = {
+                                "qid": qid,
+                                "round": r,
+                                "action": "STOP_PREGEN_JUDGE_ABSTAIN",
+                                "k": k,
+                                "mode": mode,
+                                "tokens_left": tokens_left,
+                                "usage": None,
+                                "latency_ms": 0,
+                                "retrieved_ids": retrieved_ids,
+                                "new_hits": new_hits,
+                                "has_new_hits": has_new_hits,
+                                "new_hits_ratio": new_hits_ratio,
+                                "jaccard": jaccard_sim,
+                                "n_ctx_blocks": stats.get("n_ctx_blocks"),
+                                "context_tokens": stats.get("context_tokens"),
+                                "reason": "PREGEN_JUDGE_INSUFFICIENT_LAST_ROUND",
+                                "used_gate": "uncertainty",
+                            }
+                            self._log_jsonl(step_log, log_path)
+                            print(
+                                "⛔ Last round with insufficient context — abstaining."
+                            )
+                            break
 
             print(f"🤖 Generating answer... (budget: {tokens_left} tokens left)")
             with timer() as t:
@@ -497,17 +855,34 @@ class Agent(BaseAgent):
             o = float(sup.get("overlap", 0.0))
             print(f"📈 Overlap score: {o:.3f} (threshold: {settings.OVERLAP_TAU})")
 
-            used_judge = False
+            # Enhanced Judge Assessment - Always invoke for first round
+            # Note: judge_assessment may have been computed pre-generation
             faith_ragas = None
             faith_fallback = min(1.0, 0.6 + 0.4 * o)
+
+            # Always use judge for first round or when policy demands it
             policy = settings.JUDGE_POLICY
-            if policy == "always":
-                faith_ragas = faithfulness_score(question, context_texts, draft)
+            should_use_judge = (
+                (r == 1)
+                or (policy == "always")
+                or (policy == "gray_zone" and settings.TAU_LO <= o < settings.TAU_HI)
+            )
+
+            if should_use_judge and judge_assessment is None:
+                print("🧠 Invoking Judge for context sufficiency assessment...")
+                judge_assessment = self.judge.assess_context_sufficiency(
+                    question, contexts, round_idx=r - 1
+                )
                 used_judge = True
-            elif policy == "gray_zone":
-                if settings.TAU_LO <= o < settings.TAU_HI:
-                    faith_ragas = faithfulness_score(question, context_texts, draft)
-                    used_judge = True
+                print(
+                    f"🧠 Judge assessment: sufficient={judge_assessment.is_sufficient}, "
+                    f"confidence={judge_assessment.confidence:.3f}"
+                )
+                print(f"🧠 Judge reasoning: {judge_assessment.reasoning[:100]}...")
+
+                # Also compute faithfulness score for compatibility
+                faith_ragas = faithfulness_score(question, context_texts, draft)
+
             f = faith_ragas if faith_ragas is not None else faith_fallback
             print(
                 f"🎯 Faithfulness score: {f:.3f} (threshold: {settings.FAITHFULNESS_TAU})"
@@ -516,7 +891,29 @@ class Agent(BaseAgent):
             retrieved_ids = cast(list[str], stats.get("retrieved_ids", []))
             new_hits = [d for d in retrieved_ids if d not in seen_doc_ids]
             has_new_hits = len(new_hits) > 0
-            seen_doc_ids.update(retrieved_ids)
+
+            # Prepare gate extras early so logging never breaks
+            gate_extras: dict[str, Any] = {}
+            # Initialize anchor variables for logging regardless of branch
+            qtype = finalize_utils.detect_type(question)
+            required_anchors = []  # type: list[str]
+            anchor_cov = 0.0
+            anchor_missing: list[str] = []
+            validators: dict[str, Any] = {}
+            used_anchor_constrained_search = False
+
+            try:
+                required_anchors = list(extract_required_anchors(question))
+                present_set, anchor_cov = anchors_present_in_texts(
+                    set(required_anchors), [c["text"] for c in contexts]
+                )
+                anchor_missing = sorted(list(set(required_anchors) - present_set))
+                validators = validate_factoid_anchors(
+                    question, [c["text"] for c in contexts]
+                )
+            except Exception:
+                # Keep defaults if any helper fails
+                pass
 
             # Short-circuit: no new hits
             short_reason: str | None = None
@@ -527,25 +924,143 @@ class Agent(BaseAgent):
             # Short-circuit: overlap stagnation
             elif r > 1 and (o - prev_overlap) < EPS_OVERLAP:
                 print(
-                    f"⏹️  SHORT CIRCUIT: Overlap stagnant ({o:.3f} - {prev_overlap:.3f} = {o-prev_overlap:.3f} < {EPS_OVERLAP})"
+                    f"⏹️  SHORT CIRCUIT: Overlap stagnant ({o:.3f} - {prev_overlap:.3f} = {o - prev_overlap:.3f} < {EPS_OVERLAP})"
                 )
                 short_reason = "OVERLAP_STAGNANT"
                 action = "STOP_STAGNANT"
             else:
-                print("🚪 Consulting UncertaintyGate...")
-                lexical_uncertainty = _assess_lexical_uncertainty(draft)
+                print("🚪 Consulting Enhanced UncertaintyGate...")
+
+                # Enhanced uncertainty assessments with caching
+                lexical_uncertainty = _assess_lexical_uncertainty(draft, use_cache=True)
                 completeness = _assess_response_completeness(draft)
-                gate_extras: Dict[str, Any] = {}
+                semantic_coherence = _assess_semantic_coherence(draft, question)
+                question_complexity = _assess_question_complexity(question)
+
+                # Populate gate extras during full gate evaluation
+                gate_extras = {}
+
+                # Integrate Judge signals into gate if available
+                if judge_assessment:
+                    gate_extras["judge_sufficient"] = judge_assessment.is_sufficient
+                    gate_extras["judge_confidence"] = judge_assessment.confidence
+                    gate_extras["judge_action"] = judge_assessment.suggested_action
+                    # New: pass deeper quality signals
+                    if getattr(judge_assessment, "anchor_coverage", None) is not None:
+                        gate_extras["anchor_coverage"] = (
+                            judge_assessment.anchor_coverage
+                        )
+                    if getattr(judge_assessment, "conflict_risk", None) is not None:
+                        gate_extras["conflict_risk"] = judge_assessment.conflict_risk
+                    if getattr(judge_assessment, "mismatch_flags", None) is not None:
+                        gate_extras["mismatch_flags"] = judge_assessment.mismatch_flags
+
+                    # If judge says insufficient with high confidence, consider query transformation
+                    if (
+                        not judge_assessment.is_sufficient
+                        and judge_assessment.confidence > 0.7
+                        and judge_assessment.suggested_action == "TRANSFORM_QUERY"
+                        and r == 1
+                    ):  # Only on first round to avoid loops
+                        print(
+                            "🔄 Judge suggests query transformation - attempting remedial retrieval..."
+                        )
+
+                        # Get query transformations
+                        transformations = self.query_transformer.transform_query(
+                            question, judge_assessment, contexts
+                        )
+
+                        if transformations:
+                            print(
+                                f"🔄 Trying {len(transformations)} query transformations..."
+                            )
+                            for i, transformed_query in enumerate(
+                                transformations[:2]
+                            ):  # Try up to 2
+                                print(
+                                    f"🔄 Transformation {i + 1}: {transformed_query[:80]}..."
+                                )
+
+                                # Retrieve with transformed query
+                                transform_contexts, transform_stats = (
+                                    self.retriever.retrieve_pack(
+                                        transformed_query,
+                                        k=k,
+                                        exclude_doc_ids=seen_doc_ids,
+                                        probe_factor=settings.PROBE_FACTOR,
+                                        round_idx=r,
+                                        llm_client=self.llm,
+                                    )
+                                )
+
+                                # Check if we got new/better contexts
+                                transform_ids = cast(
+                                    list[str], transform_stats.get("retrieved_ids", [])
+                                )
+                                new_transform_hits = [
+                                    d for d in transform_ids if d not in seen_doc_ids
+                                ]
+
+                                if new_transform_hits:
+                                    print(
+                                        f"🔄 Transformation {i + 1} found {len(new_transform_hits)} new contexts"
+                                    )
+                                    # Merge new contexts with existing ones
+                                    contexts.extend(
+                                        transform_contexts[:3]
+                                    )  # Add top 3 new contexts
+                                    seen_doc_ids.update(new_transform_hits)
+
+                                    # Re-assess with enhanced contexts
+                                    enhanced_judge = (
+                                        self.judge.assess_context_sufficiency(
+                                            question, contexts, round_idx=r - 1
+                                        )
+                                    )
+                                    if enhanced_judge.is_sufficient:
+                                        print(
+                                            "🔄 Query transformation successful - contexts now sufficient!"
+                                        )
+                                        judge_assessment = enhanced_judge
+                                        gate_extras["used_query_transformation"] = True
+                                        gate_extras["successful_transformation"] = (
+                                            transformed_query
+                                        )
+                                        break
+
+                # Anchor extraction & validation for factoids
+                qtype = finalize_utils.detect_type(question)
+                required_anchors = list(extract_required_anchors(question))
+                present_set, anchor_cov = anchors_present_in_texts(
+                    set(required_anchors), context_texts
+                )
+                anchor_missing = sorted(list(set(required_anchors) - present_set))
+                validators = validate_factoid_anchors(question, context_texts)
+                gate_extras["required_anchors"] = required_anchors
+                gate_extras["anchor_coverage"] = anchor_cov
+                gate_extras["missing_anchors"] = anchor_missing
+                gate_extras.update(validators)
+
                 signals = GateSignals(
                     faith=f,
                     overlap=o,
                     lexical_uncertainty=lexical_uncertainty,
                     completeness=completeness,
+                    semantic_coherence=semantic_coherence,
+                    answer_length=len(draft),
+                    question_complexity=question_complexity,
                     budget_left_tokens=tokens_left,
                     round_idx=r - 1,
                     has_reflect_left=has_reflect_left,
                     novelty_ratio=new_hits_ratio,
                     extras=gate_extras,
+                )
+
+                print(
+                    f"📊 Enhanced metrics: lex_unc={lexical_uncertainty:.3f}, "
+                    f"completeness={completeness:.3f}, coherence={semantic_coherence:.3f}, "
+                    f"q_complexity={question_complexity:.3f}"
                 )
                 if self.gate_on:
                     action = self.gate.decide(signals)
@@ -553,15 +1068,191 @@ class Agent(BaseAgent):
                 else:
                     action = GateAction.RETRIEVE_MORE
                     print("🚫 Gate OFF - continuing to next round")
-                if gate_extras.get("uncertainty_score"):
+                if "uncertainty_score" in gate_extras:
                     print(
-                        f"🌡️  Uncertainty score: {gate_extras['uncertainty_score']:.3f}"
+                        f"🌡️  Enhanced uncertainty score: {gate_extras['uncertainty_score']:.3f}"
+                    )
+                    if "adaptive_weights" in gate_extras:
+                        weights = gate_extras["adaptive_weights"]
+                        print(
+                            f"⚖️  Adaptive weights: faith={weights.get('faith', 0):.2f}, "
+                            f"overlap={weights.get('overlap', 0):.2f}, semantic={weights.get('semantic', 0):.2f}"
+                        )
+                    if "cache_hit_rate" in gate_extras:
+                        print(f"💾 Cache hit rate: {gate_extras['cache_hit_rate']:.2f}")
+
+            # If about to STOP or ABSTAIN on a factoid with missing anchors, optionally try one anchor-constrained retrieval
+            used_anchor_constrained_search = False
+            if (
+                action in (GateAction.STOP, GateAction.ABSTAIN)
+                and getattr(settings, "FACTOID_ONE_SHOT_RETRIEVAL", True)
+                and tokens_left >= getattr(settings, "FACTOID_MIN_TOKENS_LEFT", 300)
+                and (q_is_factoid(question) or qtype in ("date", "number", "entity"))
+            ):
+                fail_time = gate_extras.get("fail_time", False)
+                fail_unit = gate_extras.get("fail_unit", False)
+                fail_event = gate_extras.get("fail_event", False)
+                cov = float(gate_extras.get("anchor_coverage", 1.0) or 1.0)
+                if fail_time or fail_unit or fail_event or cov < 0.5:
+                    new_query = question
+                    # Recompute anchors using lean helpers for robustness
+                    try:
+                        required_anchors = list(q_extract_required_anchors(question))
+                        present_set = q_anchors_present_in_texts(
+                            [c["text"] for c in contexts], set(required_anchors)
+                        )
+                        anchor_missing = sorted(
+                            list(set(required_anchors) - present_set)
+                        )
+                    except Exception:
+                        pass
+                    if anchor_missing:
+                        new_query = (
+                            question + " " + " ".join(sorted(anchor_missing)[:4])
+                        )
+                    print(
+                        f"🧲 Anchor-constrained retrieval: missing={anchor_missing[:4]} (cov={cov:.2f})"
+                    )
+                    used_anchor_constrained_search = True
+                    # Retrieve with constrained query
+                    transform_contexts, transform_stats = self.retriever.retrieve_pack(
+                        new_query,
+                        k=k,
+                        exclude_doc_ids=seen_doc_ids,
+                        probe_factor=settings.PROBE_FACTOR,
+                        round_idx=r,  # subsequent round
+                        llm_client=self.llm,
+                    )
+                    transform_ids = cast(
+                        list[str], transform_stats.get("retrieved_ids", [])
+                    )
+                    new_transform_hits = [
+                        d for d in transform_ids if d not in seen_doc_ids
+                    ]
+                    if new_transform_hits:
+                        print(
+                            f"🧲 Anchor-constrained search found {len(new_transform_hits)} new docs"
+                        )
+                        # Merge new contexts and regenerate once
+                        contexts = transform_contexts[
+                            : max(2, min(4, len(transform_contexts)))
+                        ]
+                        context_texts = [c["text"] for c in contexts]
+                        context_ids = [c["id"] for c in contexts]
+                        prompt, debug_prompt = build_prompt(contexts, question)
+                        with timer() as t2:
+                            draft, usage = self.llm.chat(
+                                messages=prompt,
+                                max_tokens=settings.MAX_OUTPUT_TOKENS,
+                                temperature=settings.TEMPERATURE,
+                            )
+                        latency_ms = t2()
+                        latencies.append(latency_ms)
+                        total_tokens += usage["total_tokens"]
+                        tokens_left -= usage["total_tokens"]
+                        if _should_force_idk(question, context_texts):
+                            draft = "I don't know"
+                        draft = _normalize_answer(draft, context_ids)
+                        sup = sentence_support(
+                            draft,
+                            {i: t for i, t in zip(context_ids, context_texts)},
+                            tau_sim=settings.OVERLAP_SIM_TAU,
+                        )
+                        o = float(sup.get("overlap", 0.0))
+                        f = (
+                            faith_ragas
+                            if faith_ragas is not None
+                            else min(1.0, 0.6 + 0.4 * o)
+                        )
+                        print(
+                            f"🧲 After anchor-constrained generation: f={f:.3f}, o={o:.3f}"
+                        )
+                        action = (
+                            GateAction.STOP
+                            if (
+                                f >= settings.FAITHFULNESS_TAU
+                                and o >= settings.OVERLAP_TAU
+                            )
+                            else GateAction.RETRIEVE_MORE
+                        )
+
+            # Final-round safeguard: if gate says RETRIEVE_MORE on last round, attempt one anchor-constrained rescue
+            if (
+                action == GateAction.RETRIEVE_MORE
+                and r == settings.MAX_ROUNDS
+                and getattr(settings, "FACTOID_ONE_SHOT_RETRIEVAL", True)
+                and tokens_left >= getattr(settings, "FACTOID_MIN_TOKENS_LEFT", 300)
+                and (q_is_factoid(question) or qtype in ("date", "number", "entity"))
+            ):
+                try:
+                    rq = list(q_extract_required_anchors(question))
+                    ctx_txt = [c["text"] for c in contexts]
+                    present = q_anchors_present_in_texts(ctx_txt, set(rq))
+                    miss = sorted(list(set(rq) - set(present)))
+                except Exception:
+                    miss = []
+                if miss:
+                    print(
+                        f"⏳ Final-round rescue: trying anchor-constrained retrieval (missing={miss[:4]})"
+                    )
+                    new_query = question + " " + " ".join(miss[:4])
+                    transform_contexts, transform_stats = self.retriever.retrieve_pack(
+                        new_query,
+                        k=k,
+                        exclude_doc_ids=seen_doc_ids,
+                        probe_factor=settings.PROBE_FACTOR,
+                        round_idx=r,
+                        llm_client=self.llm,
+                    )
+                    contexts = (
+                        transform_contexts[: max(2, min(4, len(transform_contexts)))]
+                        or contexts
+                    )
+                    context_ids = [c["id"] for c in contexts]
+                    context_texts = [c["text"] for c in contexts]
+                    prompt, debug_prompt = build_prompt(contexts, question)
+                    with timer() as t2:
+                        draft, usage = self.llm.chat(
+                            messages=prompt,
+                            max_tokens=settings.MAX_OUTPUT_TOKENS,
+                            temperature=settings.TEMPERATURE,
+                        )
+                    latency_ms = t2()
+                    latencies.append(latency_ms)
+                    total_tokens += usage["total_tokens"]
+                    tokens_left -= usage["total_tokens"]
+                    if _should_force_idk(question, context_texts):
+                        draft = "I don't know"
+                    draft = _normalize_answer(draft, context_ids)
+                    sup = sentence_support(
+                        draft,
+                        {i: t for i, t in zip(context_ids, context_texts)},
+                        tau_sim=settings.OVERLAP_SIM_TAU,
+                    )
+                    o = float(sup.get("overlap", 0.0))
+                    f = (
+                        faith_ragas
+                        if faith_ragas is not None
+                        else min(1.0, 0.6 + 0.4 * o)
+                    )
+                    action = (
+                        GateAction.STOP
+                        if (
+                            f >= settings.FAITHFULNESS_TAU and o >= settings.OVERLAP_TAU
+                        )
+                        else GateAction.ABSTAIN
+                    )
+                    used_anchor_constrained_search = True
+                    print(
+                        f"⏹️  Final-round decision after anchor search: {action} (f={f:.3f}, o={o:.3f})"
                     )
 
             # Handle REFLECT action
             if should_reflect(action, has_reflect_left):
                 print("🤔 Applying REFLECT to improve answer...")
-                reflect_messages, reflect_debug = build_reflect_prompt(contexts, draft)
+                reflect_messages, reflect_debug = build_reflect_prompt(
+                    contexts, draft, required_anchors=required_anchors
+                )
                 with timer() as t_reflect:
                     reflected_answer, reflect_usage = self.llm.chat(
                         messages=reflect_messages,
@@ -612,8 +1303,14 @@ class Agent(BaseAgent):
                     "reflected_from": (
                         step_log.get("draft") if "step_log" in locals() else None
                     ),
-                    "used_gate": "uncertainty",
+                    "used_gate": "enhanced_uncertainty",
                     "uncertainty_score": gate_extras.get("uncertainty_score"),
+                    "semantic_coherence": semantic_coherence,
+                    "question_complexity": question_complexity,
+                    "adaptive_weights": gate_extras.get("adaptive_weights"),
+                    "required_anchors": required_anchors,
+                    "present_anchor_rate": anchor_cov,
+                    "missing_anchors": anchor_missing,
                 }
                 self._log_jsonl(reflect_log, log_path)
 
@@ -660,12 +1357,32 @@ class Agent(BaseAgent):
                 "has_new_hits": has_new_hits,
                 "n_ctx_blocks": stats.get("n_ctx_blocks"),
                 "context_tokens": stats.get("context_tokens"),
-                "reason": short_reason,
+                "reason": short_reason or gate_extras.get("stop_reason"),
                 "gen_tokens": usage.get("completion_tokens", 0),
                 "used_gate": "uncertainty",
                 "uncertainty_score": gate_extras.get("uncertainty_score"),
+                "new_hits_ratio": new_hits_ratio,
+                "cache_hit_rate": gate_extras.get("cache_hit_rate"),
+                "used_hyde": stats.get("used_hyde"),
+                "used_hybrid": stats.get("used_hybrid"),
+                "used_rerank": stats.get("used_rerank"),
+                "used_mmr": stats.get("used_mmr"),
+                "required_anchors": required_anchors,
+                "anchor_coverage": anchor_cov,
+                "missing_anchors": anchor_missing,
+                "fail_time": (
+                    validators.get("fail_time") if "validators" in locals() else None
+                ),
+                "fail_unit": (
+                    validators.get("fail_unit") if "validators" in locals() else None
+                ),
+                "fail_event": (
+                    validators.get("fail_event") if "validators" in locals() else None
+                ),
+                "used_anchor_constrained_search": used_anchor_constrained_search,
             }
             self._log_jsonl(step_log, log_path)
+            seen_doc_ids.update(curr_top_ids)
 
             if (
                 action
@@ -676,13 +1393,14 @@ class Agent(BaseAgent):
                     "STOP_PRE_LOW_NOVELTY",
                 )
                 or action == GateAction.STOP
+                or action == GateAction.STOP_LOW_BUDGET
             ):
                 print(f"🏁 STOPPING with action: {action}")
                 break
 
             if action == GateAction.RETRIEVE_MORE:
                 k = min(32, k + 4)
-                print(f"🔄 CONTINUING to round {r+1} with k={k}")
+                print(f"🔄 CONTINUING to round {r + 1} with k={k}")
             prev_overlap = o
             prev_top_ids = curr_top_ids
 
@@ -696,10 +1414,17 @@ class Agent(BaseAgent):
         print(f"   Unique docs seen: {len(seen_doc_ids)}")
         print(f"   Final action: {action}")
 
+        # Provide a minimal short answer for EM/F1 scoring when possible
+        try:
+            final_short = finalize_utils.finalize_short_answer(question, draft)
+        except Exception:
+            final_short = None
+
         summary_log = {
             "qid": qid,
             "question": question,
             "final_answer": draft,
+            "final_short": final_short,
             "final_f": f,
             "final_o": o,
             "final_faith_fallback": faith_fallback,

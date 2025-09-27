@@ -3,7 +3,13 @@
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Dict, Optional, Self
+from typing import Any, Optional
+
+try:
+    # Python 3.11+
+    from typing import Self  # type: ignore
+except Exception:  # Python <3.11
+    from typing_extensions import Self  # type: ignore
 
 
 class Timer:
@@ -11,8 +17,8 @@ class Timer:
 
     def __init__(self) -> None:
         """Initialize timer."""
-        self._start_times: Dict[str, float] = {}
-        self._times: Dict[str, float] = {}
+        self._start_times: dict[str, float] = {}
+        self._times: dict[str, float] = {}
 
     def start(self, name: str) -> None:
         """
@@ -56,7 +62,7 @@ class Timer:
         """
         return self._times.get(name)
 
-    def get_times(self) -> Dict[str, float]:
+    def get_times(self) -> dict[str, float]:
         """
         Get all recorded times.
 
@@ -154,7 +160,7 @@ class LatencyTracker:
         """
         self._measurements.append(latency)
 
-    def get_stats(self) -> Dict[str, float]:
+    def get_stats(self) -> dict[str, float]:
         """
         Get latency statistics.
 

@@ -1,6 +1,5 @@
 import re
-import string
-from typing import Dict, List, Set
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -28,13 +27,13 @@ def is_idk(s: str) -> bool:
     return t in {"i don't know", "i dont know"}
 
 
-def extract_citations(text: str) -> List[str]:
+def extract_citations(text: str) -> list[str]:
     return [m.group("id") for m in CIT_RE.finditer(text)]
 
 
-def extract_sentence_citations(text: str) -> List[Set[str]]:
+def extract_sentence_citations(text: str) -> list[set[str]]:
     sentences = split_sentences(text)
-    out: List[Set[str]] = []
+    out: list[set[str]] = []
     for s in sentences:
         out.append(set(extract_citations(s)))
     return out
@@ -51,8 +50,8 @@ def cosine_matrix(
 
 
 def sentence_support(
-    answer: str, ctx_map: Dict[str, str], tau_sim: float | None = None
-) -> Dict[str, float | int]:
+    answer: str, ctx_map: dict[str, str], tau_sim: float | None = None
+) -> dict[str, float | int]:
     if tau_sim is None:
         tau_sim = settings.OVERLAP_SIM_TAU
 
@@ -115,18 +114,14 @@ def faithfulness_fallback(answer: str, gold: str | None, overlap: float) -> floa
     return min(1.0, 0.6 + 0.4 * overlap)
 
 
-def _normalize_text(t: str) -> str:
-    t = t.lower()
-    # Remove punctuation
-    t = t.translate(str.maketrans("", "", string.punctuation))
-    # Remove articles
-    t = re.sub(r"\b(a|an|the)\b", " ", t)
+def _normalize_text(t: Any) -> str:
+    t = str(t).lower()
     # Normalize whitespace
     t = re.sub(r"\s+", " ", t).strip()
     return t
 
 
-def em_f1(pred: str, gold: str | None) -> Dict[str, float]:
+def em_f1(pred: str, gold: str | None) -> dict[str, float]:
     if gold is None:
         return {"em": 0.0, "f1": 0.0}
     p = _normalize_text(pred or "")
@@ -157,7 +152,7 @@ def em_f1(pred: str, gold: str | None) -> Dict[str, float]:
 
 
 # Aliases to match alternate API names requested
-def normalize_text(s: str) -> str:
+def normalize_text(s: Any) -> str:
     return _normalize_text(s)
 
 
