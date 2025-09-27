@@ -1,4 +1,4 @@
-# Master Thesis Project Documentation Report
+﻿# Master Thesis Project Documentation Report
 
 ## Project Overview
 **Title**: Uncertainty-Gated RAG (Retrieval-Augmented Generation)
@@ -6,27 +6,33 @@
 **Last Updated**: September 25, 2025
 **Current Branch**: `optimize-uncertainty-gate`
 
-## Recent Major Updates
 
+### 3. Hybrid Intent Interpreter + BAUG Integration (September 27, 2025)
+
+- Added `intent/` module (rules → LLM fallback) with deterministic JSON-only calls and conservative merge.
+- Anchors now consume `Intent` and prioritize slots/entities; supervisor passes intent signals to BAUG and telemetry.
+- New validators enforce award/tournament and unit+time anchors in cited text before STOP.
+- Telemetry fields: `intent_confidence`, `slot_completeness`, `source_of_intent`, `validators_passed`, `llm_calls`, `stop_reason`.
+- Results (N=30): Baseline F1=0.133 → Anchor F1=0.269; Overlap 0.482 → 0.589; Abstain 40% → 33%; tokens ≈ unchanged; BAUG slightly lowers median latency.
 ### 1. Anchor Debug & Hybrid Retrieval Upgrades (September 25, 2025)
 
 #### Summary
 - Fixed instability in hybrid search (removed stray block in `_hybrid_search`).
-- Reduced ingestion chunk size to 300 tokens (overlap 50) to isolate per‑season/table rows.
-- Expanded anchor extraction: 50‑40‑90 variants, season ranges (e.g., 2005–06), two‑word entities.
-- Retriever improvements: fusion anchors include 3PA/three‑point attempts; multi‑chunk per‑doc selection; in‑doc scan; slicing long texts around season/3PA; reserve rule to force one season+3PA chunk when special pattern present.
-- Orchestrator prompt now instructs computing numeric answers from per‑season/table rows and to cite the chunk with the numbers.
+- Reduced ingestion chunk size to 300 tokens (overlap 50) to isolate perâ€‘season/table rows.
+- Expanded anchor extraction: 50â€‘40â€‘90 variants, season ranges (e.g., 2005â€“06), twoâ€‘word entities.
+- Retriever improvements: fusion anchors include 3PA/threeâ€‘point attempts; multiâ€‘chunk perâ€‘doc selection; inâ€‘doc scan; slicing long texts around season/3PA; reserve rule to force one season+3PA chunk when special pattern present.
+- Orchestrator prompt now instructs computing numeric answers from perâ€‘season/table rows and to cite the chunk with the numbers.
 - Rebuilt BM25 to match FAISS (both now ~23,999 chunks).
 
 #### Results (N=3 quick run)
 - CEO (Salesforce/Oracle): answered correctly with citation.
-- 50‑40‑90 Nash: answers with numeric average (currently 5.0) + citation; next step: deterministic averaging from per‑season 3PA rows to match gold.
-- Physics‑movie: abstains; consider enabling HyDE and biasing hybrid toward BM25 for lexical queries.
+- 50â€‘40â€‘90 Nash: answers with numeric average (currently 5.0) + citation; next step: deterministic averaging from perâ€‘season 3PA rows to match gold.
+- Physicsâ€‘movie: abstains; consider enabling HyDE and biasing hybrid toward BM25 for lexical queries.
 
 #### Next Steps
-1. Add numeric aggregator (config‑guarded) to parse per‑season 3PA rows and compute averages with a citation.
+1. Add numeric aggregator (configâ€‘guarded) to parse perâ€‘season 3PA rows and compute averages with a citation.
 2. Strengthen reserve: when special anchors are detected, always include at least one chunk with (season token AND 3PA).
-3. Expand anchor phrases for device/sci‑fi (device/machine/invention; manipulate gravity/time/matter; The Core), and try HYBRID_ALPHA≈0.45 + USE_HYDE=True for lexical queries.
+3. Expand anchor phrases for device/sciâ€‘fi (device/machine/invention; manipulate gravity/time/matter; The Core), and try HYBRID_ALPHAâ‰ˆ0.45 + USE_HYDE=True for lexical queries.
 
 ---
 
@@ -152,9 +158,9 @@ The `src/agentic_rag/eval/runner.py` file has been updated to incorporate a robu
 
 #### **Test Results and Validation**
 - Manual sanity checks based on the provided examples confirm the correctness of the new metrics:
-  - `Gold = “invalid question”, output = “I don’t know.” → abstain_correct=1, overall_accuracy=1, hallucination=0, excluded from Faith/Overlap avg.`
-  - `Gold = “invalid question”, output = “Tenet [CIT:d1]” → abstain_correct=0, overall_accuracy=0, hallucination=1.`
-  - `Gold = “Tenet”, output = “Tenet [CIT:d1]” → contributes to Faith/Overlap; overall_accuracy=EM or judge.`
+  - `Gold = â€œinvalid questionâ€, output = â€œI donâ€™t know.â€ â†’ abstain_correct=1, overall_accuracy=1, hallucination=0, excluded from Faith/Overlap avg.`
+  - `Gold = â€œinvalid questionâ€, output = â€œTenet [CIT:d1]â€ â†’ abstain_correct=0, overall_accuracy=0, hallucination=1.`
+  - `Gold = â€œTenetâ€, output = â€œTenet [CIT:d1]â€ â†’ contributes to Faith/Overlap; overall_accuracy=EM or judge.`
 - No new linter errors were introduced during the implementation.
 
 #### **Current Status and Next Steps**
@@ -211,9 +217,9 @@ Following the analysis of poor performance in the previous evaluation run, a com
 ##### **Agent Loop Enhancements (`src/agentic_rag/agent/loop.py`)**
 ```python
 # Key workflow changes:
-1. Retrieve contexts → 2. Generate initial answer → 3. Judge assessment (NEW)
-4. If insufficient + high confidence → Query transformation (NEW)
-5. Enhanced uncertainty gate with Judge signals → 6. Decision (STOP/CONTINUE/REFLECT)
+1. Retrieve contexts â†’ 2. Generate initial answer â†’ 3. Judge assessment (NEW)
+4. If insufficient + high confidence â†’ Query transformation (NEW)
+5. Enhanced uncertainty gate with Judge signals â†’ 6. Decision (STOP/CONTINUE/REFLECT)
 ```
 
 ##### **Configuration Updates (`src/agentic_rag/config.py`)**
@@ -400,10 +406,10 @@ Developed a comprehensive enhancement to the uncertainty gate system with the fo
 - Performance benchmarking included
 
 **Code Quality**:
-- ✅ All linting checks pass (ruff, black, mypy)
-- ✅ Type annotations throughout
-- ✅ Comprehensive documentation
-- ✅ Error handling and edge cases covered
+- âœ… All linting checks pass (ruff, black, mypy)
+- âœ… Type annotations throughout
+- âœ… Comprehensive documentation
+- âœ… Error handling and edge cases covered
 
 #### **Configuration Updates**
 ```python
@@ -441,9 +447,9 @@ SEMANTIC_COHERENCE_WEIGHT: float = 0.10
 - Ensured all pre-commit hooks pass
 
 #### **Result**:
-- ✅ Clean codebase with zero linting errors
-- ✅ Improved type safety and maintainability
-- ✅ Successful merge to main branch
+- âœ… Clean codebase with zero linting errors
+- âœ… Improved type safety and maintainability
+- âœ… Successful merge to main branch
 
 ---
 
@@ -550,10 +556,10 @@ self.max_tokens_total = settings.MAX_TOKENS_TOTAL      # 3500 tokens
 #### **Results and Validation**
 
 **Code Quality Improvements**:
-- ✅ Eliminated hardcoded constants
-- ✅ Functional caching with real performance benefits
-- ✅ Clear action type distinctions
-- ✅ Comprehensive documentation
+- âœ… Eliminated hardcoded constants
+- âœ… Functional caching with real performance benefits
+- âœ… Clear action type distinctions
+- âœ… Comprehensive documentation
 
 **Performance Validation**:
 - Cache hit rates: 60-80% after warmup
@@ -571,19 +577,19 @@ self.max_tokens_total = settings.MAX_TOKENS_TOTAL      # 3500 tokens
 ## Current Status
 
 ### **Active Branch**: `optimize-uncertainty-gate`
-- **Agentic Framework Implementation**: ✅ COMPLETED (September 18, 2025)
+- **Agentic Framework Implementation**: âœ… COMPLETED (September 18, 2025)
   - Judge Module with context sufficiency assessment
   - Query Transformation Engine with LLM-based rewriting
   - Hybrid Search System (Vector + BM25)
   - Enhanced Uncertainty Gate with Judge integration
-- **Anchor Path Verification**: ✅ COMPLETED (September 22, 2025)
+- **Anchor Path Verification**: âœ… COMPLETED (September 22, 2025)
   - End-to-end verification of the `--system anchor` path.
   - Confirmed successful execution of baseline, agent, and anchor runs with mock backend.
-- **Performance Optimizations**: ✅ COMPLETED
+- **Performance Optimizations**: âœ… COMPLETED
   - Caching systems for Judge and BM25 indices
   - Resource management and budget tracking
   - Early stopping mechanisms
-- **Configuration Updates**: ✅ COMPLETED
+- **Configuration Updates**: âœ… COMPLETED
   - Judge enabled by default (`JUDGE_POLICY: "always"`)
   - Hybrid search enabled (`USE_HYBRID_SEARCH: True`)
   - Backward compatibility maintained
@@ -604,12 +610,12 @@ self.max_tokens_total = settings.MAX_TOKENS_TOTAL      # 3500 tokens
 ### **Implementation Status Summary**
 | Component | Status | Impact |
 |-----------|--------|---------|
-| **Judge Module** | ✅ Complete | Enables context sufficiency assessment |
-| **Query Transformation** | ✅ Complete | Addresses retrieval failure through query rewriting |
-| **Hybrid Search (BM25)** | ✅ Complete | Improves retrieval for entity-specific queries |
-| **Gate-Judge Integration** | ✅ Complete | Uncertainty calculation considers Judge signals |
-| **Performance Optimization** | ✅ Complete | Caching and resource management |
-| **Anchor Path Verification** | ✅ Complete | Confirmed end-to-end execution of the anchor system path |
+| **Judge Module** | âœ… Complete | Enables context sufficiency assessment |
+| **Query Transformation** | âœ… Complete | Addresses retrieval failure through query rewriting |
+| **Hybrid Search (BM25)** | âœ… Complete | Improves retrieval for entity-specific queries |
+| **Gate-Judge Integration** | âœ… Complete | Uncertainty calculation considers Judge signals |
+| **Performance Optimization** | âœ… Complete | Caching and resource management |
+| **Anchor Path Verification** | âœ… Complete | Confirmed end-to-end execution of the anchor system path |
 
 ### **Ready for Evaluation**
 The system is now ready for comprehensive evaluation to validate the expected improvements:
@@ -780,7 +786,7 @@ Throughout the debugging process, the following types of commands were repeatedl
 The issue with BM25 not returning any results has been addressed by iteratively fixing the tokenization and document frequency calculation logic. The `_tokenize` function is now less aggressive, allowing for more comprehensive term matching.
 
 **Next Steps**:
-1.  **Validate BM25 Contribution**: Rerun the anchor system with hybrid search enabled (`--override "USE_HYBRID_SEARCH=True"`) to finally confirm that BM25 is contributing results (i.e., "X vector + Y BM25 → Z combined" with Y > 0).
+1.  **Validate BM25 Contribution**: Rerun the anchor system with hybrid search enabled (`--override "USE_HYBRID_SEARCH=True"`) to finally confirm that BM25 is contributing results (i.e., "X vector + Y BM25 â†’ Z combined" with Y > 0).
 2.  **Remove Debug Prints**: After validation, remove any remaining temporary debug prints from `src/agentic_rag/retriever/bm25.py`.
 3.  **Update Documentation Report**: Ensure this report reflects the final status of BM25 integration.
 
@@ -797,4 +803,4 @@ The issue with BM25 not returning any results has been addressed by iteratively 
 2) Ensure FAISS present or rebuild via `python -m agentic_rag.ingest.ingest --input data/crag_corpus --out artifacts/crag_faiss --backend openai`.
 3) Run anchor with hybrid:
    `python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --n 10 --system anchor --backend openai --judge-policy gray_zone --override "USE_HYBRID_SEARCH=True USE_RERANK=False MMR_LAMBDA=0.0 MAX_ROUNDS=2"`
-4) Expect console: `Hybrid search: X vector + Y BM25 → Z combined` with Y > 0 on many queries; answers increasingly cite CTX.
+4) Expect console: `Hybrid search: X vector + Y BM25 â†’ Z combined` with Y > 0 on many queries; answers increasingly cite CTX.

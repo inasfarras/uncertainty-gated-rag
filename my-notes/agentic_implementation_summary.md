@@ -1,178 +1,55 @@
-# Agentic RAG Implementation Summary
-**Date**: September 18, 2025
-**Status**: ✅ COMPLETED
-**Implementation Time**: ~2 hours
+﻿# Agentic RAG Implementation Summary (Updated)
+Date: September 27, 2025
+Status: COMPLETE
 
 ## Overview
-Successfully implemented a comprehensive agentic RAG system that transforms the basic retrieve-generate pipeline into a sophisticated multi-agent framework with self-correction capabilities.
+This update introduces a Hybrid Question Interpreter (rules-first, LLM-fallback) and wires its intent signals through the Anchor → Retrieval → Supervisor → BAUG stack. Goals: resolve a majority of queries via rules, cut wrong-on-answerable, keep tokens ≤1.2× baseline, and improve overlap and short-answer F1.
 
-## Key Achievements
+## What’s New
 
-### 🧠 Judge Module Implementation
-- **File**: `src/agentic_rag/agent/judge.py` (346 lines)
-- **Functionality**:
-  - Lightweight LLM-based context sufficiency assessment
-  - Structured JSON response parsing with fallback logic
-  - Confidence scoring and reasoning provision
-  - Query transformation suggestions
-- **Integration**: Always invoked on first round, configurable thereafter
-- **Impact**: Enables intelligent decision-making about context quality
+- Hybrid Intent Module (`src/agentic_rag/intent/`)
+  - `types.py` Intent schema.
+  - `rules.py` regex/heuristics for years, season ranges (e.g., 2016–17), units (per game, %, USD), awards/tournament cues and aliases, task_type inference, completeness/confidence scoring.
+  - `llm.py` deterministic JSON-only fallback (temperature=0, top_p=0, max_tokens≤256) with robust handling of invalid JSON.
+  - `interpreter.py` rules-first, budget-aware LLM fallback, conservative merge policy.
 
-### 🔄 Query Transformation Engine
-- **Class**: `QueryTransformer` within Judge module
-- **Capabilities**:
-  - LLM-powered query rewriting with structured prompts
-  - Query decomposition for complex multi-hop questions
-  - Entity-focused transformations
-  - Rule-based fallback for reliability
-- **Integration**: Triggered by Judge when context insufficient with high confidence
-- **Impact**: Addresses core retrieval failure through intelligent query reformulation
+- Anchors informed by Intent (`anchors/predictor.py`)
+  - `propose_anchors(intent)` prioritizes `slots` and `core_entities`; dedup + score deterministically.
 
-### 🔍 Hybrid Search System
-- **File**: `src/agentic_rag/retriever/bm25.py` (377 lines)
-- **Components**:
-  - Full BM25 implementation with NLTK tokenization
-  - Hybrid retriever with score fusion (configurable alpha weighting)
-  - Automatic index creation and caching
-  - Min-max score normalization
-- **Integration**: Seamlessly integrated into existing VectorRetriever
-- **Impact**: Improves retrieval for entity-specific queries and exact term matching
+- Supervisor Orchestrator (`supervisor/orchestrator.py`)
+  - `intent = interpret(question, llm_budget_ok=tokens_left>=300)` then `anchors = propose_anchors(intent)`.
+  - Passes `intent_confidence`, `slot_completeness`, `source_of_intent` and validator outputs to BAUG and telemetry.
+  - Lightweight validators before STOP: (1) awards/tournament require {event+year+category/division} in cited text; (2) numeric/time require {unit+time window} in cited text.
 
-### 🚪 Enhanced Uncertainty Gate
-- **File**: `src/agentic_rag/agent/gate.py` (enhanced)
-- **Enhancements**:
-  - Judge signal integration in uncertainty calculations
-  - Adaptive decision-making based on Judge confidence
-  - Query transformation triggering logic
-  - Enhanced logging and observability
-- **Integration**: Judge signals modify uncertainty scores by ±20%
-- **Impact**: More informed gate decisions using context assessment
+- BAUG Adapter (`gate/adapter.py`)
+  - Typed `Signals`; built‑in rule policy:
+    - slot_completeness<0.6 and budget<300 → ABSTAIN
+    - validators OK and overlap≥τ → STOP
+    - new_hits_ratio<ε → STOP_LOW_GAIN
+    - else RETRIEVE_MORE (≤1 REFLECT allowed)
 
-## Technical Architecture
+- Telemetry + Tests
+  - Telemetry: intent_confidence, slot_completeness, source_of_intent, validators_passed, llm_calls, stop_reason.
+  - Tests under `tests/intent/` exercise rules, LLM fallback/merge, and signals flow.
 
-### Agent Loop Workflow (Enhanced)
-```
-1. Query Input
-2. Retrieve Initial Contexts (with Hybrid Search)
-3. Generate Initial Answer
-4. Judge Assessment (NEW) → Context Sufficient?
-   ├─ Yes, High Confidence → Proceed to Gate
-   └─ No, High Confidence → Query Transformation
-       ├─ Transform Query (2-3 variants)
-       ├─ Retrieve with Transformed Queries
-       └─ Re-assess with Enhanced Contexts
-5. Enhanced Uncertainty Gate (with Judge Signals)
-6. Decision: STOP | RETRIEVE_MORE | REFLECT | ABSTAIN
-```
+## Determinism & Budget
+- LLM gen: temperature=0, top_p=0; max output ≤160 tokens; packed context cap ≈1000 tokens.
+- Interpreter LLM: max_tokens≤256; rules-only preferred; at most one REFLECT round.
 
-### Configuration Changes
-```python
-# New settings added to config.py
-JUDGE_POLICY: "always"           # Enable Judge by default
-USE_HYBRID_SEARCH: True          # Enable BM25 + Vector search
-HYBRID_ALPHA: 0.7               # 70% vector, 30% BM25 weighting
-```
+## Results (CRAG, N=30)
+- Baseline: F1=0.133, EM=0.000, Overlap=0.482, Faith=0.557, Abstain=40%, Tokens≈1102, P50≈1561ms.
+- Anchor + Hybrid Intent (BAUG ON): F1=0.269, EM=0.100, Overlap=0.589, Faith=0.643, Abstain=33%, Tokens≈1132, P50≈1530ms.
+- Anchor (Gate OFF): Same accuracy; P50≈1656ms. BAUG primarily improves termination (slightly faster) without extra tokens.
 
-### Performance Optimizations
-- **Caching**: Judge responses and BM25 indices
-- **Early Stopping**: Query transformation limited to first round
-- **Resource Management**: Token budget tracking includes all components
-- **Parallel Processing**: Multiple query transformations evaluated concurrently
+## How to Run
+1) Rebuild FAISS/BM25: `python -X utf8 -m agentic_rag.ingest.ingest --input data/crag_corpus_html --out artifacts/crag_faiss --backend openai`
+2) Anchor (BAUG ON): `python -X utf8 -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system anchor --profile anchor_balanced --n 30`
+3) Anchor (Gate OFF): `python -X utf8 -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system anchor --gate-off --n 30 --override "USE_HYBRID_SEARCH=False" --override "RETRIEVAL_K=8" --override "PROBE_FACTOR=1" --override "RETRIEVAL_POOL_K=24" --override "MAX_CONTEXT_TOKENS=1100" --override "MAX_OUTPUT_TOKENS=90" --override "MMR_LAMBDA=0.0" --override "MAX_WORKERS=6"`
 
-## Implementation Statistics
+## Files Touched (Key)
+- New: `src/agentic_rag/intent/*`, `tests/intent/*`.
+- Updated: `anchors/predictor.py`, `anchors/validators.py`, `supervisor/orchestrator.py`, `gate/adapter.py`, telemetry recorder.
 
-### Code Metrics
-- **New Files**: 2 (723 total lines)
-- **Enhanced Files**: 4 core components
-- **Total Changes**: ~1000 lines of production code
-- **Test Coverage**: All new components have error handling
-- **Code Quality**: Zero linting errors
-
-### Feature Coverage
-| Component | Implementation | Integration | Testing |
-|-----------|---------------|-------------|---------|
-| Judge Module | ✅ Complete | ✅ Complete | ✅ Ready |
-| Query Transformation | ✅ Complete | ✅ Complete | ✅ Ready |
-| Hybrid Search | ✅ Complete | ✅ Complete | ✅ Ready |
-| Gate Integration | ✅ Complete | ✅ Complete | ✅ Ready |
-
-## Expected Performance Improvements
-
-Based on the root cause analysis and implemented solutions:
-
-### Primary Metrics (vs Baseline `1758126979`)
-- **Abstain Rate**: 30% → <15% (50% reduction target)
-- **Average F1**: 0.188 → >0.4 (100% improvement target)
-- **Average EM**: 0.0 → >0.15 (new capability target)
-- **Judge Invocation**: 0% → >80% (agentic feature activation)
-
-### Secondary Metrics
-- **Context Quality**: Improved through hybrid search and Judge assessment
-- **Query Success Rate**: Higher through transformation and decomposition
-- **System Intelligence**: Measurable through Judge confidence and reasoning
-- **Resource Efficiency**: Optimized through caching and early stopping
-
-## Validation Plan
-
-### Phase 1: Component Testing
-- ✅ Judge module functionality verification
-- ✅ Query transformation logic validation
-- ✅ Hybrid search index creation and retrieval
-- ✅ Configuration loading and integration
-
-### Phase 2: Integration Testing
-- 🔄 Full agent loop with all components active
-- 🔄 End-to-end question answering with complex queries
-- 🔄 Resource usage and performance monitoring
-
-### Phase 3: Comparative Evaluation
-- 🔄 50+ question evaluation run
-- 🔄 Metrics comparison with baseline `1758126979`
-- 🔄 Ablation studies (individual component impact)
-
-## Files Created/Modified
-
-### New Files
-- `src/agentic_rag/agent/judge.py` - Complete Judge implementation
-- `src/agentic_rag/retriever/bm25.py` - BM25 and hybrid search system
-- `scripts/test_agentic_features.py` - Component testing script
-
-### Enhanced Files
-- `src/agentic_rag/agent/loop.py` - Judge integration and query transformation
-- `src/agentic_rag/agent/gate.py` - Judge signal processing
-- `src/agentic_rag/retriever/vector.py` - Hybrid search capability
-- `src/agentic_rag/config.py` - New agentic settings
-
-### Documentation
-- `my-notes/documentation_report.md` - Comprehensive implementation documentation
-- `my-notes/agentic_implementation_summary.md` - This summary
-
-## Next Steps
-
-### Immediate (Next 1-2 hours)
-1. **Run Component Tests**: Execute `python scripts/test_agentic_features.py`
-2. **Full Evaluation**: Run 50-question evaluation with new system
-3. **Baseline Comparison**: Compare results with run `1758126979`
-
-### Short-term (Next 1-2 days)
-1. **Ablation Studies**: Test individual components (Judge-only, Hybrid-only)
-2. **Performance Tuning**: Optimize based on evaluation results
-3. **Production Validation**: Deploy and monitor real-world performance
-
-### Long-term (Next 1-2 weeks)
-1. **Advanced Features**: Consider ML-based Judge enhancements
-2. **Multi-Agent Evolution**: Expand to full multi-agent architecture
-3. **Research Publication**: Document findings and improvements
-
-## Success Criteria Met
-
-✅ **Judge Module**: Fully implemented with LLM integration
-✅ **Query Transformation**: Complete with multiple strategies
-✅ **Hybrid Search**: BM25 + Vector fusion implemented
-✅ **Gate Integration**: Judge signals properly incorporated
-✅ **Performance**: Optimized with caching and resource management
-✅ **Configuration**: Backward compatible with new features enabled
-✅ **Documentation**: Comprehensive technical documentation
-✅ **Code Quality**: Zero linting errors, robust error handling
-
-The agentic RAG system is now ready for comprehensive evaluation and production deployment.
+## Notes
+- LLM JSON robustness and rule-only early exits are validated in tests.
+- ≥60% rule‑only on small subsets; share varies by domain in full runs.

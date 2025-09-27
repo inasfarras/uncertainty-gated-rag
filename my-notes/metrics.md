@@ -58,3 +58,13 @@ This document details the mechanism behind the key evaluation metrics used in th
 -   **Paired Analysis**:
     -   Compare **Faithfulness/Overlap** vs. **F1/EM** to distinguish between answers that are faithful to bad context versus answers that are simply wrong.
     -   Compare **Tokens/Latency** vs. **Abstain Rate** to evaluate the efficiency of the uncertainty gate.
+
+---
+
+## Latest Comparison (CRAG, N=30)
+
+| System | Overlap | Faith | EM | F1 | Abstain | Tokens | P50 (ms) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Baseline | 0.482 | 0.557 | 0.000 | 0.133 | 0.400 | ≈1102 | 1561 |
+| Anchor (BAUG ON) | 0.589 | 0.643 | 0.100 | 0.269 | 0.333 | ≈1132 | 1530 |
+| Anchor (Gate OFF) | 0.589 | 0.643 | 0.100 | 0.269 | 0.333 | ≈1133 | 1656 |
