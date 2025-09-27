@@ -69,6 +69,13 @@ class Settings(BaseSettings):
     # Context quality thresholds
     ANCHOR_COVERAGE_TAU: float = 0.6  # Min anchor coverage for sufficiency
     CONFLICT_RISK_TAU: float = 0.25  # Above this, treat as insufficient
+    BAUG_STOP_COVERAGE_MIN: float = 0.3  # Min coverage required for BAUG STOP
+    BAUG_HIGH_OVERLAP_TAU: float = (
+        0.7  # Allow STOP with high overlap even if coverage is low
+    )
+    BAUG_SLOT_COMPLETENESS_MIN: float = (
+        0.6  # Slot completeness threshold for early ABSTAIN
+    )
     # Anchor orchestrator thresholds
     NEW_HITS_EPS: float = 0.15  # Min ratio of new docs to continue
     FINE_FILTER_TAU: float = 0.15  # Min median fine score to keep exploring

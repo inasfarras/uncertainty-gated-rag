@@ -589,6 +589,8 @@ def run(
         csv_cols.append("anchor_coverage")
     if "conflict_risk" in df.columns:
         csv_cols.append("conflict_risk")
+    if "baug_reasons" in df.columns:
+        csv_cols.append("baug_reasons")
     if "used_judge" in df.columns and "used_judge" not in csv_cols:
         csv_cols.append("used_judge")
 

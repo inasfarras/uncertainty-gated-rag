@@ -615,10 +615,13 @@ class AnchorSystem:
             # Gate control: allow disabling BAUG via settings.ANCHOR_GATE_ON
             if getattr(settings, "ANCHOR_GATE_ON", True):
                 action = self.baug.decide(baug_signals)
+                baug_reasons = self.baug.last_reasons()
             else:
                 # When gate is OFF: follow a simple policy
                 # - If more rounds allowed, request RETRIEVE_MORE, else STOP
                 action = "RETRIEVE_MORE" if round_idx < settings.MAX_ROUNDS else "STOP"
+                baug_reasons = ["gate_off"]
+            baug_signals["baug_reasons"] = baug_reasons
             final_action = action
 
             # Update seen ids
@@ -653,6 +656,7 @@ class AnchorSystem:
                     "usage": usage,
                     "latency_ms": latency_ms,
                     "action": action,
+                    "baug_reasons": baug_reasons,
                     "gate_kind": self.baug.kind(),
                     "gate_last_decision": self.baug.last_decision() or "",
                     "debug_prompt": debug_prompt if self.debug_mode else "",
@@ -751,6 +755,7 @@ class AnchorSystem:
             "n_ctx_blocks": locals().get("n_blocks", 0),
             "context_tokens": locals().get("context_tokens", 0),
             "action": final_action,
+            "baug_reasons": baug_reasons,
             "used_judge": used_judge,
             "final_action": final_action,
             "debug_prompt": locals().get("debug_prompt", "") if self.debug_mode else "",
