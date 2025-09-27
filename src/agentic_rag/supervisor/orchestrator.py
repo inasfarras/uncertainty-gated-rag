@@ -35,6 +35,7 @@ from agentic_rag.eval.signals import (
     sentence_support,
 )
 from agentic_rag.gate.adapter import BAUGAdapter
+from agentic_rag.intent.interpreter import interpret
 from agentic_rag.models.adapter import ChatMessage, OpenAIAdapter, get_openai
 from agentic_rag.prompting import ContextBlock, pack_context
 from agentic_rag.prompting_reflect import build_reflect_prompt, should_reflect
@@ -100,19 +101,40 @@ class AnchorSystem:
         # Load CRAG page metadata (url/title) for richer logs
         self.meta_map = load_meta()
 
-    def answer(self, question: str, qid: str | None = None) -> Dict[str, Any]:
+    def answer(self, question: str, qid: str | None = None) -> dict[str, Any]:
         qid = qid or str(uuid.uuid4())
 
         tokens_left = settings.MAX_TOKENS_TOTAL
         total_tokens = 0
         latencies: list[int] = []
 
-        seen_doc_ids: Set[str] = set()
-        anchors = propose_anchors(question, top_m=8)
+        seen_doc_ids: set[str] = set()
+        intent = interpret(
+            question,
+            llm_budget_ok=tokens_left >= settings.FACTOID_MIN_TOKENS_LEFT,
+        )
+        llm_calls = (
+            1
+            if (
+                intent.source_of_intent != "rule_only"
+                or any(
+                    flag in intent.ambiguity_flags
+                    for flag in ("invalid_llm_json", "llm_call_failed")
+                )
+            )
+            else 0
+        )
+        anchors = propose_anchors(intent, top_m=6)
         # Always include a global retrieval pass (raw question) to emulate baseline coverage
         # then add up to 5 best anchors (total ~6 passes)
         top_anchor_texts = [a["text"] for a in anchors[:5]]
         selected_anchors = [""] + top_anchor_texts
+
+        validators_state: dict[str, Any] = {
+            "award": {},
+            "numeric": {},
+            "passed": True,
+        }
 
         round_idx = 0
         draft = ""
@@ -427,7 +449,7 @@ class AnchorSystem:
             packed, context_tokens, n_blocks = pack_context(
                 kept_blocks, max_tokens_cap=eff_cap
             )
-            contexts = [dict(b) for b in packed]
+            contexts = [cast(dict[str, Any], dict(b)) for b in packed]
             # Enrich packed contexts with meta if missing (defensive)
             for ctx in contexts:
                 mid = ctx.get("id", "")
@@ -450,22 +472,23 @@ class AnchorSystem:
                     max_tokens=settings.MAX_OUTPUT_TOKENS,
                     temperature=settings.TEMPERATURE,
                 )
+            llm_calls += 1
             latency_ms = tmr()
             latencies.append(latency_ms)
             total_tokens += usage.get("total_tokens", 0)
             tokens_left -= usage.get("total_tokens", 0)
 
             # Normalize answer citations
-            context_ids = [c["id"] for c in contexts]
+            context_ids = [str(c.get("id", "")) for c in contexts]
             draft = _normalize_answer(draft, context_ids)
             final_short = finalize_short_answer(question, draft)
 
             # Estimate support and faith
-            ctx_map = {c["id"]: c["text"] for c in contexts}
+            ctx_map = {str(c.get("id", "")): str(c.get("text", "")) for c in contexts}
             sup = sentence_support(draft, ctx_map, tau_sim=settings.OVERLAP_SIM_TAU)
             overlap_est = float(sup.get("overlap", 0.0))
             faith_ragas = faithfulness_score(
-                question, [c["text"] for c in contexts], draft
+                question, [str(c.get("text", "")) for c in contexts], draft
             )
             faith_est = (
                 faith_ragas
@@ -476,13 +499,13 @@ class AnchorSystem:
             # Anchor validators and judge (gray-zone policy ≤ 1 call)
             try:
                 cov, present, missing = anchor_coverage(
-                    question, [c["text"] for c in contexts]
+                    question, [str(c.get("text", "")) for c in contexts]
                 )
             except Exception:
                 cov, present, missing = 0.0, set(), set()
             try:
                 mismatches = anchor_mismatch_flags(
-                    question, [c["text"] for c in contexts]
+                    question, [str(c.get("text", "")) for c in contexts]
                 )
             except Exception:
                 mismatches = {
@@ -491,11 +514,26 @@ class AnchorSystem:
                     "entity_mismatch": False,
                 }
             try:
-                conf_risk = estimate_conflict_risk([c["text"] for c in contexts])
+                conf_risk = estimate_conflict_risk(
+                    [str(c.get("text", "")) for c in contexts]
+                )
             except Exception:
                 conf_risk = 0.0
 
-            judge_extras = {}
+            texts_for_validation = [str(c.get("text", "")) for c in contexts]
+            award_req = award_tournament_requirements(question, texts_for_validation)
+            numeric_req = units_time_requirements(question, texts_for_validation)
+            validators_passed = not (
+                award_req.get("missing") or numeric_req.get("missing")
+            )
+            validators_snapshot = {
+                "award": award_req,
+                "numeric": numeric_req,
+                "passed": validators_passed,
+            }
+            validators_state.update(validators_snapshot)
+
+            judge_extras: dict[str, Any] = {"validators": validators_snapshot.copy()}
             if (settings.JUDGE_POLICY == "always") or (
                 settings.JUDGE_POLICY == "gray_zone"
                 and not used_judge
@@ -505,25 +543,29 @@ class AnchorSystem:
                     judge_assessment = self.judge.assess_context_sufficiency(
                         question, contexts, round_idx=round_idx - 1
                     )
+                    llm_calls += 1
                     used_judge = True
-                    judge_extras = {
-                        "judge_sufficient": judge_assessment.is_sufficient,
-                        "judge_confidence": judge_assessment.confidence,
-                        "judge_action": judge_assessment.suggested_action,
-                        "anchor_coverage": (
-                            float(judge_assessment.anchor_coverage)
-                            if judge_assessment.anchor_coverage is not None
-                            else cov
-                        ),
-                        "conflict_risk": (
-                            float(judge_assessment.conflict_risk)
-                            if judge_assessment.conflict_risk is not None
-                            else conf_risk
-                        ),
-                        "mismatch_flags": judge_assessment.mismatch_flags or mismatches,
-                        "required_anchors": judge_assessment.required_anchors
-                        or list(present | set(missing)),
-                    }
+                    judge_extras.update(
+                        {
+                            "judge_sufficient": judge_assessment.is_sufficient,
+                            "judge_confidence": judge_assessment.confidence,
+                            "judge_action": judge_assessment.suggested_action,
+                            "anchor_coverage": (
+                                float(judge_assessment.anchor_coverage)
+                                if judge_assessment.anchor_coverage is not None
+                                else cov
+                            ),
+                            "conflict_risk": (
+                                float(judge_assessment.conflict_risk)
+                                if judge_assessment.conflict_risk is not None
+                                else conf_risk
+                            ),
+                            "mismatch_flags": judge_assessment.mismatch_flags
+                            or mismatches,
+                            "required_anchors": judge_assessment.required_anchors
+                            or list(present | set(missing)),
+                        }
+                    )
                     # Prefer judge coverage/risk
                     cov = float(judge_extras.get("anchor_coverage", cov))
                     conf_risk = float(judge_extras.get("conflict_risk", conf_risk))
@@ -537,6 +579,18 @@ class AnchorSystem:
             semantic_coherence = 1.0
 
             # BAUG decision
+            if "validators" in judge_extras:
+                judge_extras["validators"]["passed"] = validators_passed
+            else:
+                judge_extras["validators"] = {"passed": validators_passed}
+            judge_extras.setdefault(
+                "intent",
+                {
+                    "task_type": intent.task_type,
+                    "core_entities": intent.core_entities,
+                    "slots": intent.slots,
+                },
+            )
             baug_signals = {
                 "overlap_est": overlap_est,
                 "faith_est": float(faith_est),
@@ -551,6 +605,10 @@ class AnchorSystem:
                 "semantic_coherence": float(semantic_coherence),
                 "answer_length": len(draft),
                 "question_complexity": 0.5,
+                "intent_confidence": float(intent.intent_confidence),
+                "slot_completeness": float(intent.slot_completeness),
+                "source_of_intent": intent.source_of_intent,
+                "validators_passed": bool(validators_passed),
                 "extras": judge_extras,
                 "fine_median": fine_median,
             }
@@ -560,9 +618,7 @@ class AnchorSystem:
             else:
                 # When gate is OFF: follow a simple policy
                 # - If more rounds allowed, request RETRIEVE_MORE, else STOP
-                action = (
-                    "RETRIEVE_MORE" if round_idx < settings.MAX_ROUNDS else "STOP"
-                )
+                action = "RETRIEVE_MORE" if round_idx < settings.MAX_ROUNDS else "STOP"
             final_action = action
 
             # Update seen ids
@@ -589,6 +645,11 @@ class AnchorSystem:
                     "faith_est": float(faith_est),
                     "fine_median": fine_median,
                     "tokens_left": tokens_left,
+                    "intent_confidence": float(intent.intent_confidence),
+                    "slot_completeness": float(intent.slot_completeness),
+                    "source_of_intent": intent.source_of_intent,
+                    "validators_passed": validators_passed,
+                    "validators": validators_snapshot,
                     "usage": usage,
                     "latency_ms": latency_ms,
                     "action": action,
@@ -614,12 +675,16 @@ class AnchorSystem:
             if (
                 not short_reason
                 and not did_constrained_retrieval
-                and cov < settings.ANCHOR_COVERAGE_TAU
                 and tokens_left > settings.FACTOID_MIN_TOKENS_LEFT
+                and (cov < settings.ANCHOR_COVERAGE_TAU or not validators_passed)
             ):
                 did_constrained_retrieval = True
                 # pick strongest anchor
                 best_anchor = selected_anchors[0] if selected_anchors else ""
+                if not validators_passed:
+                    slot_candidates = [v for v in intent.slots.values() if v]
+                    if slot_candidates:
+                        best_anchor = slot_candidates[0]
                 try:
                     extra_paths = self.retriever.explore(
                         best_anchor, question, hop_budget=1, seen_doc_ids=seen_doc_ids
@@ -648,6 +713,7 @@ class AnchorSystem:
                         max_tokens=settings.MAX_OUTPUT_TOKENS,
                         temperature=settings.TEMPERATURE,
                     )
+                llm_calls += 1
                 latency_ms2 = tmr2()
                 latencies.append(latency_ms2)
                 total_tokens += usage2.get("total_tokens", 0)
@@ -670,7 +736,7 @@ class AnchorSystem:
                 break
 
         # Summary
-        summary: Dict[str, Any] = {
+        summary: dict[str, Any] = {
             "qid": qid,
             "question": question,
             "final_answer": draft,
@@ -690,6 +756,13 @@ class AnchorSystem:
             "debug_prompt": locals().get("debug_prompt", "") if self.debug_mode else "",
             "anchor_coverage": float(locals().get("cov", 0.0)),
             "conflict_risk": float(locals().get("conf_risk", 0.0)),
+            "intent_confidence": float(intent.intent_confidence),
+            "slot_completeness": float(intent.slot_completeness),
+            "source_of_intent": intent.source_of_intent,
+            "validators_passed": bool(validators_state.get("passed", True)),
+            "validators": dict(validators_state),
+            "llm_calls": llm_calls,
+            "stop_reason": locals().get("short_reason") or final_action,
         }
 
         log_summary(qid, summary)

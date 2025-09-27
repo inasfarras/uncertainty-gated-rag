@@ -117,11 +117,13 @@ def award_tournament_requirements(question: str, texts: Iterable[str]) -> dict:
         is_award or is_tourn or (" in " in ql and any(ch.isdigit() for ch in ql))
     )
     requires_category = is_award
+    requires_event = is_award or is_tourn
 
     import re as _re
 
     has_year = bool(_re.search(r"\b(?:19|20)\d{2}\b", tl))
-    # Category: presence of any award token in context
+    event_tokens = AWARD_TOKENS | TOURNAMENT_TOKENS
+    has_event = any(tok in tl for tok in event_tokens)
     has_category = any(tok in tl for tok in AWARD_TOKENS)
 
     missing: list[str] = []
@@ -129,11 +131,15 @@ def award_tournament_requirements(question: str, texts: Iterable[str]) -> dict:
         missing.append("year")
     if requires_category and not has_category:
         missing.append("category")
+    if requires_event and not has_event:
+        missing.append("event")
     return {
         "requires_year": requires_year,
         "requires_category": requires_category,
+        "requires_event": requires_event,
         "has_year": has_year,
         "has_category": has_category,
+        "has_event": has_event,
         "missing": missing,
     }
 

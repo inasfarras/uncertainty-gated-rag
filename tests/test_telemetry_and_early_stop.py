@@ -39,5 +39,14 @@ def test_anchor_orchestrator_runs_monkeypatch(tmp_path, monkeypatch):
     res = sys.answer("When was iPhone released?", qid="test_qid")
     assert isinstance(res, dict)
     assert "final_answer" in res
+    for key in {
+        "intent_confidence",
+        "slot_completeness",
+        "source_of_intent",
+        "validators_passed",
+        "llm_calls",
+        "stop_reason",
+    }:
+        assert key in res
     # JSONL log file should be present
     # (path derived from settings.LOG_DIR, which defaults to logs/)
