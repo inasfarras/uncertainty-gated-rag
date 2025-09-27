@@ -36,6 +36,32 @@ PROFILES: dict[str, dict[str, Any]] = {
             "MMR_LAMBDA=0.0 MAX_WORKERS=6"
         ),
     },
+    # Baseline plain/vanilla (keeps things simple and deterministic)
+    "baseline_plain": {
+        "system": "baseline",
+        "gate_on": False,  # N/A for baseline; kept for uniformity
+        "max_rounds": 1,
+        "judge_policy": "never",
+        "overrides": (
+            "USE_HYBRID_SEARCH=False USE_RERANK=False "
+            "RETRIEVAL_K=8 PROBE_FACTOR=1 RETRIEVAL_POOL_K=8 "
+            "MAX_CONTEXT_TOKENS=900 MAX_OUTPUT_TOKENS=60 "
+            "MMR_LAMBDA=0.0 MAX_WORKERS=6"
+        ),
+    },
+    # Balanced profile but with BAUG/Gate OFF (keeps overrides identical)
+    "anchor_balanced_off": {
+        "system": "anchor",
+        "gate_on": False,
+        "max_rounds": 2,
+        "judge_policy": "gray_zone",
+        "overrides": (
+            "USE_HYBRID_SEARCH=False "
+            "RETRIEVAL_K=8 PROBE_FACTOR=1 RETRIEVAL_POOL_K=24 "
+            "MAX_CONTEXT_TOKENS=1100 MAX_OUTPUT_TOKENS=90 "
+            "MMR_LAMBDA=0.0 MAX_WORKERS=6"
+        ),
+    },
     # Fastest single-round factoid-style pass
     "anchor_fast": {
         "system": "anchor",
@@ -174,7 +200,10 @@ _override_file_option = typer.Option(
 _profile_option = typer.Option(
     None,
     "--profile",
-    help="Named profile: anchor_fast | anchor_balanced | anchor_hybrid_light",
+    help=(
+        "Named profile: anchor_fast | anchor_balanced | anchor_balanced_off | "
+        "anchor_hybrid_light | baseline_plain"
+    ),
     case_sensitive=False,
 )
 
