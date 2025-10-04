@@ -197,3 +197,54 @@ def units_time_requirements(question: str, texts: Iterable[str]) -> dict:
         "has_time": has_time,
         "missing": missing,
     }
+
+
+def list_requirements(question: str, texts: Iterable[str]) -> dict:
+    """Guardrail for list-style questions that specify a required count.
+
+    Attempts a light extraction of quoted titles or capitalized spans from the
+    supplied texts and checks whether the distinct item count meets the request.
+    Returns dict: {needs_list: bool, required_count: int|None, has_count: int, missing: list[str]}.
+    """
+    import re as _re
+
+    q = (question or "").lower()
+    # Heuristics: detect patterns like "3 of the", "top 3", "list 3"
+    needs_list = False
+    required = None
+    m = _re.search(r"\b(?:top|list|name|what)\s+(\d{1,2})\b", q)
+    if m:
+        needs_list = True
+        try:
+            required = int(m.group(1))
+        except Exception:
+            required = None
+    if not needs_list:
+        m2 = _re.search(r"\b(\d{1,2})\s+of\s+the\b", q)
+        if m2:
+            needs_list = True
+            try:
+                required = int(m2.group(1))
+            except Exception:
+                required = None
+
+    # Extract plausible item names: quoted strings and Title Case multi-words
+    tl = "\n".join((t or "") for t in texts)
+    quoted = set(_re.findall(r'"([^"\n]{2,80})"', tl))
+    # Title-case sequences 1–4 words (e.g., movie titles)
+    titles = set(
+        _re.findall(r"\b([A-Z][A-Za-z0-9'&.-]+(?:\s+[A-Z][A-Za-z0-9'&.-]+){0,3})\b", tl)
+    )
+    items = {s.strip() for s in quoted | titles if s.strip()}
+
+    has_count = len(items)
+    missing: list[str] = []
+    if needs_list and required is not None and has_count < required:
+        missing.append("list_items")
+
+    return {
+        "needs_list": needs_list,
+        "required_count": required,
+        "has_count": has_count,
+        "missing": missing,
+    }

@@ -589,6 +589,8 @@ def run(
         csv_cols.append("anchor_coverage")
     if "conflict_risk" in df.columns:
         csv_cols.append("conflict_risk")
+    if "baug_reasons" in df.columns:
+        csv_cols.append("baug_reasons")
     if "used_judge" in df.columns and "used_judge" not in csv_cols:
         csv_cols.append("used_judge")
 
@@ -686,22 +688,28 @@ def run(
         )
         summary_metrics["Avg Faithfulness (RAGAS)"] = f"{mean_r:.3f}"
 
-    summary_metrics.update(
-        {
-            "Avg Overlap": f"{answerable_df['final_o'].mean():.3f}",
-            "Avg EM": f"{df['em'].mean():.3f}",
-            "Avg F1": f"{df['f1'].mean():.3f}",
-            "Abstain Rate": f"{df['abstain'].mean():.3f}",
-            "Wrong-on-Answerable Rate": f"{df['wrong_on_answerable'].mean():.3f}",
-            "Abstain Accuracy": f"{df['abstain_correct'].mean():.3f}",
-            "Overall Accuracy": f"{df['overall_accuracy'].mean():.3f}",
-            "Hallucination Rate": f"{df['hallucinated_unans'].mean():.3f}",
-            "Score": f"{df['score'].mean():.3f}",
-            "Avg Total Tokens": f"{df['total_tokens'].mean():.0f}",
-            "P50 Latency (ms)": f"{df['latency_ms'].median():.0f}",
-            "IDK+Cit Count": str(int(df["idk_with_citation_count"].sum())),
-        }
-    )
+    detailed_metrics = {
+        "Avg Overlap": f"{answerable_df['final_o'].mean():.3f}",
+        "Avg EM": f"{df['em'].mean():.3f}",
+        "Avg F1": f"{df['f1'].mean():.3f}",
+        "Abstain Rate": f"{df['abstain'].mean():.3f}",
+        "Wrong-on-Answerable Rate": f"{df['wrong_on_answerable'].mean():.3f}",
+        "Abstain Accuracy": f"{df['abstain_correct'].mean():.3f}",
+        "Overall Accuracy": f"{df['overall_accuracy'].mean():.3f}",
+        "Hallucination Rate": f"{df['hallucinated_unans'].mean():.3f}",
+        "Score": f"{df['score'].mean():.3f}",
+        "Avg Total Tokens": f"{df['total_tokens'].mean():.0f}",
+        "P50 Latency (ms)": f"{df['latency_ms'].median():.0f}",
+        "IDK+Cit Count": str(int(df["idk_with_citation_count"].sum())),
+    }
+    omit_from_overview = {
+        "Wrong-on-Answerable Rate",
+        "Abstain Accuracy",
+        "Overall Accuracy",
+        "Hallucination Rate",
+        "Score",
+    }
+    summary_metrics.update({k: v for k, v in detailed_metrics.items() if k not in omit_from_overview})
 
     if system == "agent":
         # Judge invoked rate and tokens (if present)

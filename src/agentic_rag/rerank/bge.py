@@ -73,6 +73,11 @@ def create_reranker(model_name: str | None = None) -> BGECrossEncoder | None:
 
     model_name = model_name or "BAAI/bge-reranker-v2-m3"
     try:
-        return BGECrossEncoder(model_name)
+        # Avoid dtype issues by honoring settings for FP16 usage
+        from agentic_rag.config import settings
+
+        return BGECrossEncoder(
+            model_name, use_fp16=bool(getattr(settings, "RERANK_FP16", False))
+        )
     except Exception:
         return None

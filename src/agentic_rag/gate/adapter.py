@@ -67,6 +67,7 @@ class BAUGAdapter:
         self._callable: Any | None = None
         self._last_decision: str | None = None
         self._last_signals: Signals | None = None
+        self._last_reasons: list[str] = []
         if self._external:
             try:
                 mod_name, fn_name = self._external.split(":", 1)
@@ -81,37 +82,67 @@ class BAUGAdapter:
         if self._callable is not None:
             try:
                 self._last_decision = str(self._callable(raw_signals))
+                self._last_reasons = ["external_handler"]
                 return self._last_decision
             except Exception as exc:
                 print(f"External BAUG call failed, using fallback: {exc}")
 
         sig = Signals.from_dict(raw_signals)
         self._last_signals = sig
-        action = self._rule_based(sig)
+        action, reasons = self._rule_based(sig)
         self._last_decision = action
+        self._last_reasons = reasons
         return action
 
-    def _rule_based(self, sig: Signals) -> str:
-        if sig.slot_completeness < 0.6 and sig.budget_left < 300:
-            return GateAction.ABSTAIN
-        if not sig.validators_passed:
-            return (
-                GateAction.RETRIEVE_MORE
-                if sig.budget_left >= 300
-                else GateAction.ABSTAIN
-            )
-        if sig.overlap_est >= settings.OVERLAP_TAU:
-            return GateAction.STOP
-        if sig.new_hits_ratio < settings.NEW_HITS_EPS:
-            return "STOP_LOW_GAIN"
-        judge_action = (sig.extras or {}).get("judge_action")
+    def _rule_based(self, sig: Signals) -> tuple[str, list[str]]:
+        reasons: list[str] = []
+        slot_thresh = getattr(settings, "BAUG_SLOT_COMPLETENESS_MIN", 0.6)
+        coverage_min = getattr(settings, "BAUG_STOP_COVERAGE_MIN", 0.3)
+        high_overlap_tau = getattr(settings, "BAUG_HIGH_OVERLAP_TAU", 0.7)
+
         if (
-            sig.has_reflect_left
-            and sig.round_idx > 0
-            and judge_action == GateAction.REFLECT
+            sig.slot_completeness < slot_thresh
+            and sig.budget_left < settings.FACTOID_MIN_TOKENS_LEFT
         ):
-            return GateAction.REFLECT
-        return GateAction.RETRIEVE_MORE
+            reasons.extend(["low_slot_completeness", "low_budget"])
+            return GateAction.ABSTAIN, reasons
+
+        if not sig.validators_passed:
+            reasons.append("validators_missing")
+            if sig.budget_left < settings.FACTOID_MIN_TOKENS_LEFT:
+                reasons.append("low_budget")
+                return GateAction.ABSTAIN, reasons
+            return GateAction.RETRIEVE_MORE, reasons
+
+        coverage_ok = sig.anchor_coverage >= coverage_min
+        overlap_ok = sig.overlap_est >= settings.OVERLAP_TAU
+        high_overlap = sig.overlap_est >= high_overlap_tau
+
+        if overlap_ok and coverage_ok:
+            reasons.extend(["overlap_ok", "coverage_ok"])
+            return GateAction.STOP, reasons
+        if high_overlap:
+            reasons.append("high_overlap")
+            if not coverage_ok:
+                reasons.append("low_coverage")
+            return GateAction.STOP, reasons
+
+        if sig.round_idx > 0 and sig.new_hits_ratio < settings.NEW_HITS_EPS:
+            reasons.append("low_new_hits")
+            return "STOP_LOW_GAIN", reasons
+
+        if sig.budget_left < settings.FACTOID_MIN_TOKENS_LEFT:
+            reasons.append("low_budget")
+
+        if not coverage_ok:
+            reasons.append("low_coverage")
+        if sig.overlap_est < settings.OVERLAP_TAU:
+            reasons.append("low_overlap")
+        if sig.new_hits_ratio < settings.NEW_HITS_EPS:
+            reasons.append("low_new_hits")
+        if not reasons:
+            reasons.append("default")
+        return GateAction.RETRIEVE_MORE, reasons
 
     def kind(self) -> str:
         return "external" if self._callable is not None else "built-in"
@@ -123,3 +154,6 @@ class BAUGAdapter:
         if self._last_signals is None:
             return None
         return self._last_signals.source_of_intent or None
+
+    def last_reasons(self) -> list[str]:
+        return list(self._last_reasons)
