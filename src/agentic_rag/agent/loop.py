@@ -469,6 +469,10 @@ class Baseline(BaseAgent):
             settings.USE_HYBRID_SEARCH = False
             settings.PROBE_FACTOR = 1
             settings.RETRIEVAL_K = 8
+            settings.ANCHOR_BONUS = 0.0
+            settings.GATE_SEED_MISSING_ANCHORS = False
+            settings.ANCHOR_GATE_ON = False
+            settings.FACTOID_ONE_SHOT_RETRIEVAL = False
             # Clamp to a ~1k cap to ensure comparable packing
             settings.MAX_CONTEXT_TOKENS = 1000
         except Exception:
@@ -563,7 +567,8 @@ class Baseline(BaseAgent):
             "n_ctx_blocks": stats.get("n_ctx_blocks"),
             "context_tokens": stats.get("context_tokens"),
             "action": "STOP",
-            "used_judge": faith_ragas is not None,
+            "used_judge": False,
+            "judge_calls": 0,
             "final_action": "STOP",
             "debug_prompt": debug_prompt,
         }
@@ -604,13 +609,18 @@ class Agent(BaseAgent):
         # Max allowed similarity between consecutive retrieved sets
         MAX_JACCARD_SIM = 0.8
         has_reflect_left = True
+        pending_anchor_terms: list[str] = []
+        force_retrieval_boost = False
         # Defaults for metrics in case no generation occurs
         f: float = 0.0
         o: float = 0.0
         faith_ragas = None  # type: ignore[assignment]
         faith_fallback: float = 0.6
         action = "INIT"
-        used_judge = False
+        policy = settings.JUDGE_POLICY
+        max_judge_calls = getattr(settings, "JUDGE_MAX_CALLS_PER_Q", 1)
+        judge_calls = 0
+        any_judge_used = False
 
         print(f"⚙️  Config: MAX_ROUNDS={settings.MAX_ROUNDS}, GATE=UncertaintyGate")
         print(
@@ -622,14 +632,30 @@ class Agent(BaseAgent):
             r += 1
             print(f"\n🔄 Round {r}/{settings.MAX_ROUNDS} - Retrieving k={k} docs...")
 
+            query_for_round = question
+            seed_terms_used = False
+            if self.gate_on and pending_anchor_terms and getattr(settings, "GATE_SEED_MISSING_ANCHORS", True):
+                seed_terms = sorted(set(pending_anchor_terms))[:4]
+                if seed_terms:
+                    query_for_round = question + " " + " ".join(seed_terms)
+                    print(f"dY� Seeding retrieval with missing anchors: {seed_terms}")
+                    seed_terms_used = True
+            if self.gate_on and force_retrieval_boost:
+                bonus = getattr(settings, "GATE_RETRIEVAL_K_BONUS", 0)
+                if bonus:
+                    k = min(32, max(k, settings.RETRIEVAL_K + bonus))
+                print(f"dY� Retrieval boost active (k={k})")
+                force_retrieval_boost = False
             contexts, stats = self.retriever.retrieve_pack(
-                question,
+                query_for_round,
                 k=k,
                 exclude_doc_ids=seen_doc_ids,
                 probe_factor=settings.PROBE_FACTOR,
                 round_idx=r - 1,
                 llm_client=self.llm,
             )
+            if seed_terms_used:
+                pending_anchor_terms = []
             prompt, debug_prompt = build_prompt(contexts, question)
 
             print(
@@ -695,14 +721,19 @@ class Agent(BaseAgent):
                 break
 
             # Optional: Pre-generation Judge to assess context sufficiency
-            used_judge = False
             judge_assessment = None
-            if getattr(settings, "JUDGE_PREGEN", True):
+            allow_pregen = (
+                getattr(settings, "JUDGE_PREGEN", True)
+                and policy == "always"
+                and judge_calls < max_judge_calls
+            )
+            if allow_pregen:
                 print("🧠 Pre-generation Judge: assessing context sufficiency...")
                 judge_assessment = self.judge.assess_context_sufficiency(
                     question, contexts, round_idx=r - 1
                 )
-                used_judge = True
+                judge_calls += 1
+                any_judge_used = True
                 print(
                     f"🧠 Judge (pre-gen): sufficient={judge_assessment.is_sufficient}, "
                     f"conf={judge_assessment.confidence:.2f}, action={judge_assessment.suggested_action}"
@@ -861,19 +892,20 @@ class Agent(BaseAgent):
             faith_fallback = min(1.0, 0.6 + 0.4 * o)
 
             # Always use judge for first round or when policy demands it
-            policy = settings.JUDGE_POLICY
-            should_use_judge = (
-                (r == 1)
-                or (policy == "always")
-                or (policy == "gray_zone" and settings.TAU_LO <= o < settings.TAU_HI)
-            )
+            should_use_judge = False
+            if judge_assessment is None and judge_calls < max_judge_calls:
+                if policy == "always":
+                    should_use_judge = True
+                elif policy == "gray_zone" and settings.TAU_LO <= o < settings.TAU_HI:
+                    should_use_judge = True
 
-            if should_use_judge and judge_assessment is None:
+            if should_use_judge:
                 print("🧠 Invoking Judge for context sufficiency assessment...")
                 judge_assessment = self.judge.assess_context_sufficiency(
                     question, contexts, round_idx=r - 1
                 )
-                used_judge = True
+                judge_calls += 1
+                any_judge_used = True
                 print(
                     f"🧠 Judge assessment: sufficient={judge_assessment.is_sufficient}, "
                     f"confidence={judge_assessment.confidence:.3f}"
@@ -1041,6 +1073,10 @@ class Agent(BaseAgent):
                 gate_extras["anchor_coverage"] = anchor_cov
                 gate_extras["missing_anchors"] = anchor_missing
                 gate_extras.update(validators)
+                fail_time = bool(validators.get("fail_time"))
+                fail_unit = bool(validators.get("fail_unit"))
+                fail_event = bool(validators.get("fail_event"))
+                missing_anchors = list(gate_extras.get("missing_anchors") or anchor_missing or [])
 
                 signals = GateSignals(
                     faith=f,
@@ -1081,19 +1117,59 @@ class Agent(BaseAgent):
                     if "cache_hit_rate" in gate_extras:
                         print(f"💾 Cache hit rate: {gate_extras['cache_hit_rate']:.2f}")
 
-            # If about to STOP or ABSTAIN on a factoid with missing anchors, optionally try one anchor-constrained retrieval
-            used_anchor_constrained_search = False
+            action_str = str(action)
+            coverage_min = getattr(settings, "BAUG_STOP_COVERAGE_MIN", 0.3)
+            stop_blocked = (
+                fail_time
+                or fail_unit
+                or fail_event
+                or float(anchor_cov) < coverage_min
+                or o < settings.OVERLAP_TAU
+            )
+            if self.gate_on and stop_blocked and action_str.startswith("STOP"):
+                if tokens_left >= getattr(settings, "FACTOID_MIN_TOKENS_LEFT", 300):
+                    print("dY", "Low-support STOP blocked - retrieving more")
+                    action = GateAction.RETRIEVE_MORE
+                    gate_extras["stop_reason"] = "LOW_SUPPORT"
+                    force_retrieval_boost = True
+                    if getattr(settings, "GATE_SEED_MISSING_ANCHORS", True):
+                        seed_pool = missing_anchors or required_anchors
+                        if seed_pool:
+                            pending_anchor_terms = list(seed_pool[:4])
+                else:
+                    print("dY", "Low-support STOP but budget exhausted - abstaining")
+                    action = GateAction.ABSTAIN
+                    gate_extras["stop_reason"] = "LOW_SUPPORT_NO_BUDGET"
+            overlap_gain = o - prev_overlap if r > 1 else o
+            min_overlap_gain = getattr(settings, "OVERLAP_IMPROVEMENT_MIN", 0.0)
             if (
-                action in (GateAction.STOP, GateAction.ABSTAIN)
+                self.gate_on
+                and action == GateAction.STOP
+                and r > 1
+                and overlap_gain >= min_overlap_gain
+                and o < settings.OVERLAP_TAU
+                and tokens_left >= getattr(settings, "FACTOID_MIN_TOKENS_LEFT", 300)
+            ):
+                print("dY", "Overlap improving but below tau - continuing")
+                action = GateAction.RETRIEVE_MORE
+                gate_extras["stop_reason"] = "OVERLAP_IMPROVING"
+                force_retrieval_boost = True
+                if getattr(settings, "GATE_SEED_MISSING_ANCHORS", True):
+                    seed_pool = missing_anchors or required_anchors
+                    if seed_pool:
+                        pending_anchor_terms = list(seed_pool[:4])
+
+            # If about to STOP or ABSTAIN on a factoid with missing anchors, optionally try one anchor-constrained retrieval
+            if (
+                self.gate_on
+                and (action == GateAction.ABSTAIN or str(action).startswith("STOP"))
                 and getattr(settings, "FACTOID_ONE_SHOT_RETRIEVAL", True)
                 and tokens_left >= getattr(settings, "FACTOID_MIN_TOKENS_LEFT", 300)
                 and (q_is_factoid(question) or qtype in ("date", "number", "entity"))
             ):
-                fail_time = gate_extras.get("fail_time", False)
-                fail_unit = gate_extras.get("fail_unit", False)
-                fail_event = gate_extras.get("fail_event", False)
                 cov = float(gate_extras.get("anchor_coverage", 1.0) or 1.0)
-                if fail_time or fail_unit or fail_event or cov < 0.5:
+                missing_anchors = list(gate_extras.get("missing_anchors") or anchor_missing or [])
+                if fail_time or fail_unit or fail_event or cov < 0.5 or missing_anchors:
                     new_query = question
                     # Recompute anchors using lean helpers for robustness
                     try:
@@ -1246,6 +1322,87 @@ class Agent(BaseAgent):
                     print(
                         f"⏹️  Final-round decision after anchor search: {action} (f={f:.3f}, o={o:.3f})"
                     )
+
+            # Zero-overlap rescue (one extra try before reflection)
+            if (
+                self.gate_on
+                and action == GateAction.ABSTAIN
+                and o == 0.0
+                and tokens_left >= getattr(settings, "ZERO_RESCUE_MIN_TOKENS", 2200)
+                and (q_is_factoid(question) or qtype in ("date", "number", "entity"))
+            ):
+                rescue_terms = [
+                    t
+                    for t in (
+                        gate_extras.get("missing_anchors")
+                        or required_anchors
+                        or list(q_extract_required_anchors(question))
+                        or []
+                    )
+                    if t
+                ]
+                additional = sorted(set(rescue_terms))[:4]
+                if not additional:
+                    print("dY", "Zero-overlap rescue skipped: no anchor terms")
+                    if not gate_extras.get("stop_reason"):
+                        gate_extras["stop_reason"] = "NO_SUPPORT"
+                else:
+                    print("dY", "Triggering zero-overlap rescue...")
+                    rescue_query = question + " " + " ".join(additional)
+                    if "countries" in question.lower() and "countries" not in rescue_query.lower():
+                        rescue_query += " countries list"
+                    rescue_k = min(
+                        32,
+                        max(
+                            k + getattr(settings, "ZERO_RESCUE_K_BONUS", 2),
+                            settings.RETRIEVAL_K,
+                        ),
+                    )
+                    rescue_contexts, rescue_stats = self.retriever.retrieve_pack(
+                        rescue_query,
+                        k=rescue_k,
+                        exclude_doc_ids=seen_doc_ids,
+                        probe_factor=settings.PROBE_FACTOR,
+                        round_idx=r,
+                        llm_client=self.llm,
+                    )
+                    stats = rescue_stats
+                    k = rescue_k
+                    rescue_ids = [c["id"] for c in rescue_contexts]
+                    seen_doc_ids.update(rescue_ids)
+                    contexts = rescue_contexts[: max(2, min(4, len(rescue_contexts)))] or contexts
+                    context_ids = [c["id"] for c in contexts]
+                    context_texts = [c["text"] for c in contexts]
+                    prompt, debug_prompt = build_prompt(contexts, question)
+                    with timer() as t_rescue:
+                        draft, usage = self.llm.chat(
+                            messages=prompt,
+                            max_tokens=settings.MAX_OUTPUT_TOKENS,
+                            temperature=settings.TEMPERATURE,
+                        )
+                    rescue_latency = t_rescue()
+                    latencies.append(rescue_latency)
+                    total_tokens += usage["total_tokens"]
+                    tokens_left -= usage["total_tokens"]
+                    if _should_force_idk(question, context_texts):
+                        draft = "I don't know"
+                    draft = _normalize_answer(draft, context_ids)
+                    sup = sentence_support(
+                        draft,
+                        {i: t for i, t in zip(context_ids, context_texts)},
+                        tau_sim=settings.OVERLAP_SIM_TAU,
+                    )
+                    o = float(sup.get("overlap", 0.0))
+                    f = (
+                        faith_ragas if faith_ragas is not None else min(1.0, 0.6 + 0.4 * o)
+                    )
+                    if f >= settings.FAITHFULNESS_TAU and o >= settings.OVERLAP_TAU:
+                        action = GateAction.STOP
+                        gate_extras["stop_reason"] = "ZERO_RESCUE_SUCCESS"
+                        print("dY", f"Zero-overlap rescue succeeded (f={f:.3f}, o={o:.3f})")
+                    else:
+                        gate_extras["stop_reason"] = "ZERO_RESCUE_NO_SUPPORT"
+                        print("dY", f"Zero-overlap rescue still lacking support (f={f:.3f}, o={o:.3f})")
 
             # Handle REFLECT action
             if should_reflect(action, has_reflect_left):
@@ -1406,6 +1563,14 @@ class Agent(BaseAgent):
 
         p50_latency_ms = np.percentile(latencies, 50) if latencies else 0
 
+        stop_reason = short_reason or gate_extras.get("stop_reason")
+        if action == GateAction.ABSTAIN and o == 0.0 and self.gate_on:
+            stop_reason = stop_reason or "NO_SUPPORT"
+
+        stop_reason = short_reason or gate_extras.get("stop_reason")
+        if action == GateAction.ABSTAIN and o == 0.0 and self.gate_on:
+            stop_reason = stop_reason or "NO_SUPPORT"
+
         print("\n📋 Final Summary:")
         print(f"   Rounds completed: {r}")
         print(f"   Total tokens used: {total_tokens}")
@@ -1414,17 +1579,21 @@ class Agent(BaseAgent):
         print(f"   Unique docs seen: {len(seen_doc_ids)}")
         print(f"   Final action: {action}")
 
-        # Provide a minimal short answer for EM/F1 scoring when possible
-        try:
-            final_short = finalize_utils.finalize_short_answer(question, draft)
-        except Exception:
-            final_short = None
+        if action == GateAction.ABSTAIN or str(action).upper().startswith("STOP_PREGEN_JUDGE_ABSTAIN"):
+            draft = "I don't know"
+            final_short = "i don't know"
+        else:
+            try:
+                final_short = finalize_utils.finalize_short_answer(question, draft)
+            except Exception:
+                final_short = None
 
         summary_log = {
             "qid": qid,
             "question": question,
             "final_answer": draft,
             "final_short": final_short,
+            "reason": stop_reason,
             "final_f": f,
             "final_o": o,
             "final_faith_fallback": faith_fallback,
@@ -1439,9 +1608,11 @@ class Agent(BaseAgent):
             "n_ctx_blocks": stats.get("n_ctx_blocks"),
             "context_tokens": stats.get("context_tokens"),
             "action": action,
+            "reason": stop_reason,
             "debug_prompt": debug_prompt,
             "uniq_docs_seen": len(seen_doc_ids),
-            "used_judge": used_judge,
+            "used_judge": any_judge_used,
+            "judge_calls": judge_calls,
             "final_action": action,
         }
         self._log_jsonl(summary_log, log_path)

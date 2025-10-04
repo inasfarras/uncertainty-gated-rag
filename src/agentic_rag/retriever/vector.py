@@ -1,5 +1,6 @@
 import os
 import re
+import threading
 from typing import Any, TypedDict
 
 import pandas as pd
@@ -38,6 +39,8 @@ class VectorRetriever:
             os.path.join(faiss_dir, "chunks.parquet")
         ).set_index("id")
         self.reranker = None
+        # Guard reranker calls across threads; HF tokenizers are not re-entrant
+        self._rerank_lock = threading.Lock()
         if settings.USE_RERANK:
             self.reranker = create_reranker(settings.RERANKER_MODEL)
 
@@ -562,11 +565,20 @@ class VectorRetriever:
         # Step 4: Optional reranking
         if self.reranker and candidates:
             try:
-                rerank_k = min(len(candidates), k * 2)  # Keep 2x target for MMR
-                print(f"   🏆 Reranking {len(candidates)} → {rerank_k} candidates...")
-                reranked_results = self.reranker.rerank(
-                    query, [dict(c) for c in candidates], rerank_k
+                rerank_cand_k = min(
+                    len(candidates), max(getattr(settings, "RERANK_CANDIDATE_K", 50), k)
                 )
+                keep_k = min(
+                    rerank_cand_k, max(getattr(settings, "RERANK_KEEP_K", 15), k)
+                )
+                print(
+                    f"   Reranking {len(candidates)} ? {rerank_cand_k} candidates, keep {keep_k} before MMR..."
+                )
+                # Serialize reranker calls to avoid 'Already borrowed' from fast tokenizers
+                with self._rerank_lock:
+                    reranked_results = self.reranker.rerank(
+                        query, [dict(c) for c in candidates], rerank_cand_k
+                    )
 
                 # Create a score map for efficient lookup
                 score_map = {
@@ -582,14 +594,13 @@ class VectorRetriever:
                         c["score"] = c["rerank_score"]
                         updated_candidates.append(c)
 
-                # Sort by new score and take top_k
+                # Sort by new score and keep a fixed number for next stage
                 updated_candidates.sort(key=lambda x: x["score"], reverse=True)
-                candidates = updated_candidates[:rerank_k]
+                candidates = updated_candidates[:keep_k]
 
-                print("   🏆 Reranking completed")
+                print("   Reranking completed")
             except Exception as e:
-                print(f"   ❌ Reranking failed, falling back to FAISS scores: {e}")
-
+                print(f"   Reranking failed, falling back to FAISS scores: {e}")
         # Step 5: MMR diversification
         if settings.MMR_LAMBDA > 0 and len(candidates) > k:
             try:

@@ -53,7 +53,17 @@ class RetrievalAgent:
         seen: set[str] = set(seen_doc_ids or set())
         q = f"{question} :: {anchor}" if anchor else question
 
-        contexts, stats = self.retriever.retrieve_pack(q, k=8, probe_factor=2)
+        # Respect global retrieval settings so profiles/overrides take effect
+        try:
+            k = int(getattr(settings, "RETRIEVAL_K", 8))
+        except Exception:
+            k = 8
+        try:
+            probe = int(getattr(settings, "PROBE_FACTOR", 2))
+        except Exception:
+            probe = 2
+
+        contexts, stats = self.retriever.retrieve_pack(q, k=k, probe_factor=probe)
         doc_ids = [c.get("id", "") for c in contexts]
         new_ids = [d for d in doc_ids if d not in seen]
         novelty_ratio = (len(new_ids) / max(1, len(doc_ids))) if doc_ids else 0.0
