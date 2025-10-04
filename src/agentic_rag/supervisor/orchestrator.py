@@ -15,14 +15,9 @@ from agentic_rag.anchors.validators import (
     AWARD_TOKENS,
     award_tournament_requirements,
     units_time_requirements,
-)
-from agentic_rag.anchors.validators import (
+    list_requirements,
     conflict_risk as estimate_conflict_risk,
-)
-from agentic_rag.anchors.validators import (
     coverage as anchor_coverage,
-)
-from agentic_rag.anchors.validators import (
     mismatch_flags as anchor_mismatch_flags,
 )
 from agentic_rag.config import settings
@@ -521,18 +516,32 @@ class AnchorSystem:
                 conf_risk = 0.0
 
             texts_for_validation = [str(c.get("text", "")) for c in contexts]
-            award_req = award_tournament_requirements(question, texts_for_validation)
-            numeric_req = units_time_requirements(question, texts_for_validation)
-            validators_passed = not (
-                award_req.get("missing") or numeric_req.get("missing")
-            )
-            validators_snapshot = {
-                "award": award_req,
-                "numeric": numeric_req,
-                "passed": validators_passed,
-            }
-            validators_state.update(validators_snapshot)
-
+            
+award_req = award_tournament_requirements(question, texts_for_validation)
+            
+numeric_req = units_time_requirements(question, texts_for_validation)
+            
+list_req = list_requirements(question, texts_for_validation)
+            
+validators_passed = not (
+            
+    award_req.get("missing") or numeric_req.get("missing") or list_req.get("missing")
+            
+)
+            
+validators_snapshot = {
+            
+    "award": award_req,
+            
+    "numeric": numeric_req,
+            
+    "list": list_req,
+            
+    "passed": validators_passed,
+            
+}
+            
+validators_state.update(validators_snapshot)
             judge_extras: dict[str, Any] = {"validators": validators_snapshot.copy()}
             if (settings.JUDGE_POLICY == "always") or (
                 settings.JUDGE_POLICY == "gray_zone"

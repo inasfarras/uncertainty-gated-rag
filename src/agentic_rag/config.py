@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     # Context quality thresholds
     ANCHOR_COVERAGE_TAU: float = 0.7  # Min anchor coverage for sufficiency
     CONFLICT_RISK_TAU: float = 0.25  # Above this, treat as insufficient
-    BAUG_STOP_COVERAGE_MIN: float = 0.3  # Min coverage required for BAUG STOP
+    BAUG_STOP_COVERAGE_MIN: float = 0.35  # Min coverage required for BAUG STOP
     BAUG_HIGH_OVERLAP_TAU: float = (
         0.7  # Allow STOP with high overlap even if coverage is low
     )
