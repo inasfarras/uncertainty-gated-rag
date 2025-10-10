@@ -321,7 +321,7 @@ def run(
     settings.log_dir = _folder_for_run(system, gate_on)
 
     # Load dataset
-    with open(dataset) as f:
+    with open(dataset, encoding="utf-8") as f:
         questions = [json.loads(line) for line in f]
     if n > 0:
         questions = questions[:n]
@@ -709,7 +709,9 @@ def run(
         "Hallucination Rate",
         "Score",
     }
-    summary_metrics.update({k: v for k, v in detailed_metrics.items() if k not in omit_from_overview})
+    summary_metrics.update(
+        {k: v for k, v in detailed_metrics.items() if k not in omit_from_overview}
+    )
 
     if system == "agent":
         # Judge invoked rate and tokens (if present)

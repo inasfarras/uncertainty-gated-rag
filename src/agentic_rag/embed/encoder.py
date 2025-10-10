@@ -1,9 +1,14 @@
+from typing import cast
+
 import numpy as np
 import numpy.typing as npt
 import tiktoken
+from sentence_transformers import SentenceTransformer
 
 from agentic_rag.config import settings
 from agentic_rag.models.adapter import get_openai
+
+_st_model_cache: SentenceTransformer | None = None
 
 
 def _encoding():
@@ -55,5 +60,32 @@ def embed_texts(texts: list[str]) -> npt.NDArray[np.float32]:
         embs = client.embed(texts, embed_model=settings.EMBED_MODEL)
         arr = np.array(embs, dtype=np.float32)
         return _normalize(arr)
+    elif settings.EMBED_BACKEND == "st":
+        # Sentence-transformers: FREE offline embeddings
+        # import torch # Already imported implicitly by SentenceTransformer, but explicit for clarity
+        # from sentence_transformers import SentenceTransformer # Moved to top
+        import torch
+
+        global _st_model_cache
+
+        # Cache model instance
+        if _st_model_cache is None:
+            model_name = getattr(
+                settings, "ST_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+            )
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            print(f"Loading sentence-transformers model: {model_name} on {device}")
+            _st_model_cache = SentenceTransformer(model_name, device=device)
+
+        # Encode texts (with batch processing for efficiency)
+        batch_size = getattr(settings, "EMBED_BATCH_SIZE", 32)
+        embs = _st_model_cache.encode(
+            texts,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+            normalize_embeddings=False,  # We normalize ourselves
+            batch_size=batch_size,  # Process multiple texts at once for speed
+        )
+        return _normalize(cast(npt.NDArray[np.float32], embs))
     else:
         raise RuntimeError(f"Unknown embed backend: {settings.EMBED_BACKEND}")

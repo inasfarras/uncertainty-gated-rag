@@ -12,28 +12,30 @@ class Settings(BaseSettings):
     # Deterministic generation controls
     TEMPERATURE: float = 0.0
     TOP_P: float = 0.0
-    EMBED_BACKEND: Literal["openai", "st", "mock"] = "openai"
+    EMBED_BACKEND: Literal["openai", "st", "mock"] = (
+        "st"  # Use sentence-transformers to match FAISS index
+    )
     EMBED_MODEL: str = "text-embedding-3-small"
     ST_EMBED_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
 
-    FAISS_INDEX_PATH: str = "artifacts/crag_faiss"
+    FAISS_INDEX_PATH: str = "artifacts/crag_faiss_full"
     # Overall budget guardrail for a single query
     MAX_TOKENS_TOTAL: int = 3500
     # Max tokens for packed context in prompts (new name; keep old for compat)
-    MAX_CONTEXT_TOKENS: int = 1000
+    MAX_CONTEXT_TOKENS: int = 1500  # Increased to pack more context
     # Backwards-compat name (do not remove); prefer MAX_CONTEXT_TOKENS
     CONTEXT_TOKEN_CAP: int = 2000
     # Max tokens the model can generate
     MAX_OUTPUT_TOKENS: int = 160
     # Loop controls
-    # Allow one retry round when the gate requests more retrieval
-    MAX_ROUNDS: int = 2
+    # Allow more rounds to find good contexts before giving up
+    MAX_ROUNDS: int = 3  # Increased from 2 to give more chances
     RETRIEVAL_K: int = 8
     PROBE_FACTOR: int = 4
     GRAPH_K: int = 20
-    FAITHFULNESS_TAU: float = 0.65
+    FAITHFULNESS_TAU: float = 0.55
     # Support-overlap threshold used by the gate to allow STOP
-    OVERLAP_TAU: float = 0.25
+    OVERLAP_TAU: float = 0.35  # Lowered from 0.25 to allow STOP with lower overlap
     OVERLAP_SIM_TAU: float = 0.60
     UNCERTAINTY_TAU: float = 0.50
     # Enhanced gate settings
@@ -47,13 +49,15 @@ class Settings(BaseSettings):
     USE_RERANK: bool = True
     RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
     # Control FP16 for reranker to avoid dtype issues on some backends
-    RERANK_FP16: bool = False
+    RERANK_FP16: bool = True  # Enable for 2x speed on CUDA
+    RERANK_BATCH_SIZE: int = 64  # Batch size for reranking
+    EMBED_BATCH_SIZE: int = 32  # Batch size for embeddings
     USE_HYDE: bool = False
     MMR_LAMBDA: float = 0.45
     # Rerank cascade: rerank candidate pool → keep top-N for MMR/packing
     RERANK_CANDIDATE_K: int = 50
-    RERANK_KEEP_K: int = 15
-    RETRIEVAL_POOL_K: int = 24
+    RERANK_KEEP_K: int = 20  # Increased to keep more candidates after reranking
+    RETRIEVAL_POOL_K: int = 32  # Increased pool size for better coverage
     # Hybrid search combining vector and BM25
     USE_HYBRID_SEARCH: bool = True
     HYBRID_ALPHA: float = 0.6  # Weight for vector vs BM25 (0.6 = 60% vector, 40% BM25)
@@ -76,17 +80,28 @@ class Settings(BaseSettings):
     # Context quality thresholds
     ANCHOR_COVERAGE_TAU: float = 0.7  # Min anchor coverage for sufficiency
     CONFLICT_RISK_TAU: float = 0.25  # Above this, treat as insufficient
-    BAUG_STOP_COVERAGE_MIN: float = 0.35  # Min coverage required for BAUG STOP
+    BAUG_STOP_COVERAGE_MIN: float = (
+        0.50  # Min coverage required for BAUG STOP (lowered to reduce abstentions)
+    )
     BAUG_HIGH_OVERLAP_TAU: float = (
-        0.7  # Allow STOP with high overlap even if coverage is low
+        0.75  # Require high overlap to stop despite low coverage (lowered from 0.85)
+    )
+    BAUG_CONFLICT_THRESHOLD: float = (
+        0.7  # Max conflict risk before forcing more retrieval (raised from 0.4 - was too sensitive)
     )
     BAUG_SLOT_COMPLETENESS_MIN: float = (
-        0.6  # Slot completeness threshold for early ABSTAIN
+        0.4  # Slot completeness threshold for early ABSTAIN (lowered from 0.6)
     )
     # Anchor orchestrator thresholds
-    NEW_HITS_EPS: float = 0.15  # Min ratio of new docs to continue
-    FINE_FILTER_TAU: float = 0.15  # Min median fine score to keep exploring
-    ANCHOR_PLATEAU_EPS: float = 0.05  # Min coverage gain between rounds
+    NEW_HITS_EPS: float = (
+        0.12  # Min ratio of new docs to continue (lowered to be less aggressive)
+    )
+    FINE_FILTER_TAU: float = (
+        0.10  # Min median fine score to keep exploring (lowered to be less aggressive)
+    )
+    ANCHOR_PLATEAU_EPS: float = (
+        0.03  # Min coverage gain between rounds (lowered to allow more rounds)
+    )
     MAX_WORKERS: int = 4  # Parallel anchor workers
     # Packing reserves: force-include anchor-bearing contexts when coverage is low
     RESERVE_ANCHOR_SLOTS: int = 2

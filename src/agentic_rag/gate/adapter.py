@@ -96,40 +96,94 @@ class BAUGAdapter:
 
     def _rule_based(self, sig: Signals) -> tuple[str, list[str]]:
         reasons: list[str] = []
-        slot_thresh = getattr(settings, "BAUG_SLOT_COMPLETENESS_MIN", 0.6)
+        slot_thresh = getattr(settings, "BAUG_SLOT_COMPLETENESS_MIN", 0.4)
         coverage_min = getattr(settings, "BAUG_STOP_COVERAGE_MIN", 0.3)
-        high_overlap_tau = getattr(settings, "BAUG_HIGH_OVERLAP_TAU", 0.7)
+        high_overlap_tau = getattr(settings, "BAUG_HIGH_OVERLAP_TAU", 0.75)
 
+        # Only abstain if BOTH slot and budget are extremely low AND we've tried enough rounds
         if (
             sig.slot_completeness < slot_thresh
             and sig.budget_left < settings.FACTOID_MIN_TOKENS_LEFT
+            and sig.round_idx >= 2  # Give at least 2 rounds before abstaining
         ):
-            reasons.extend(["low_slot_completeness", "low_budget"])
+            reasons.extend(["low_slot_completeness", "low_budget", "max_rounds"])
             return GateAction.ABSTAIN, reasons
 
+        # Don't abstain just for validators - always try to retrieve more unless budget is critically low
         if not sig.validators_passed:
             reasons.append("validators_missing")
-            if sig.budget_left < settings.FACTOID_MIN_TOKENS_LEFT:
-                reasons.append("low_budget")
+            if sig.budget_left < 100:  # Only abstain if budget is REALLY low
+                reasons.append("critical_budget")
                 return GateAction.ABSTAIN, reasons
+            return GateAction.RETRIEVE_MORE, reasons
+
+        # FIX: Check for conflicting evidence - don't stop if docs contradict each other
+        # This prevents hallucinations where system picks wrong version from conflicting sources
+        conflict_threshold = getattr(settings, "BAUG_CONFLICT_THRESHOLD", 0.7)
+        if (
+            sig.conflict_risk > conflict_threshold and sig.round_idx < 1
+        ):  # Only force retrieval on first round
+            reasons.append("conflicting_evidence")
             return GateAction.RETRIEVE_MORE, reasons
 
         coverage_ok = sig.anchor_coverage >= coverage_min
         overlap_ok = sig.overlap_est >= settings.OVERLAP_TAU
         high_overlap = sig.overlap_est >= high_overlap_tau
 
+        # Gray-zone thresholds for REFLECT
+        tau_lo = getattr(settings, "TAU_LO", 0.35)
+        # tau_hi = getattr(settings, "TAU_HI", 0.65)
+
+        # REFLECT on borderline metrics (only once, after at least 1 round)
+        # if sig.round_idx >= 1 and sig.has_reflect_left and coverage_ok:
+        #     # Check for gray-zone overlap or faithfulness
+        #     overlap_borderline = tau_lo <= sig.overlap_est < settings.OVERLAP_TAU
+        #     faith_borderline = tau_lo <= sig.faith_est < settings.FAITHFULNESS_TAU
+        #
+        #     if overlap_borderline or faith_borderline:
+        #         reasons.append("borderline_metrics")
+        #         if overlap_borderline:
+        #             reasons.append(f"overlap_gray_zone:{sig.overlap_est:.2f}")
+        #         if faith_borderline:
+        #             reasons.append(f"faith_gray_zone:{sig.faith_est:.2f}")
+        #         return GateAction.REFLECT, reasons
+
         if overlap_ok and coverage_ok:
             reasons.extend(["overlap_ok", "coverage_ok"])
             return GateAction.STOP, reasons
-        if high_overlap:
-            reasons.append("high_overlap")
-            if not coverage_ok:
-                reasons.append("low_coverage")
-            return GateAction.STOP, reasons
 
+        # FIX: Don't stop with high overlap if coverage is low
+        # High overlap = model is confident, but low coverage = wrong evidence
+        # This combination leads to hallucinations
+        if high_overlap and coverage_ok:
+            reasons.extend(["high_overlap", "coverage_ok"])
+            return GateAction.STOP, reasons
+        elif high_overlap and not coverage_ok:
+            # High confidence but missing key anchors - keep retrieving
+            reasons.extend(["high_overlap", "low_coverage"])
+            return GateAction.RETRIEVE_MORE, reasons
+
+        # Check for low new hits, but prioritize coverage over new hits
         if sig.round_idx > 0 and sig.new_hits_ratio < settings.NEW_HITS_EPS:
             reasons.append("low_new_hits")
-            return "STOP_LOW_GAIN", reasons
+            # If we have good coverage (anchor terms present), try to answer
+            # Don't require high overlap because it can drop to 0 with conflicting evidence
+            if coverage_ok:
+                reasons.append("coverage_sufficient")
+                return GateAction.STOP, reasons
+            # If overlap is high but coverage is low, keep retrieving
+            if high_overlap and not coverage_ok:
+                reasons.append("high_overlap_low_coverage")
+                return GateAction.RETRIEVE_MORE, reasons
+            # If no good signals - map based on evidence quality
+            if sig.overlap_est > 0 or sig.faith_est > tau_lo:
+                # Some weak evidence exists
+                reasons.append("low_gain_weak_evidence")
+                return GateAction.STOP, reasons
+            else:
+                # No useful evidence at all
+                reasons.append("no_new_evidence")
+                return GateAction.ABSTAIN, reasons
 
         if sig.budget_left < settings.FACTOID_MIN_TOKENS_LEFT:
             reasons.append("low_budget")
