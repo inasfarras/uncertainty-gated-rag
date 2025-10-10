@@ -14,6 +14,7 @@ from agentic_rag.anchors.predictor import propose_anchors
 from agentic_rag.anchors.validators import (
     AWARD_TOKENS,
     award_tournament_requirements,
+    list_requirements,
     units_time_requirements,
 )
 from agentic_rag.anchors.validators import (
@@ -523,16 +524,19 @@ class AnchorSystem:
             texts_for_validation = [str(c.get("text", "")) for c in contexts]
             award_req = award_tournament_requirements(question, texts_for_validation)
             numeric_req = units_time_requirements(question, texts_for_validation)
+            list_req = list_requirements(question, texts_for_validation)
             validators_passed = not (
-                award_req.get("missing") or numeric_req.get("missing")
+                award_req.get("missing")
+                or numeric_req.get("missing")
+                or list_req.get("missing")
             )
             validators_snapshot = {
                 "award": award_req,
                 "numeric": numeric_req,
+                "list": list_req,
                 "passed": validators_passed,
             }
             validators_state.update(validators_snapshot)
-
             judge_extras: dict[str, Any] = {"validators": validators_snapshot.copy()}
             if (settings.JUDGE_POLICY == "always") or (
                 settings.JUDGE_POLICY == "gray_zone"
@@ -627,7 +631,7 @@ class AnchorSystem:
             # Update seen ids
             seen_doc_ids.update(retrieved_ids)
 
-            # Round log
+            # Round log with structured BAUG decision
             log_round(
                 qid,
                 round_idx,
@@ -659,21 +663,49 @@ class AnchorSystem:
                     "baug_reasons": baug_reasons,
                     "gate_kind": self.baug.kind(),
                     "gate_last_decision": self.baug.last_decision() or "",
+                    # Structured BAUG decision for analysis
+                    "baug_decision": {
+                        "action": action,
+                        "reasons": baug_reasons,
+                        "signals": {
+                            "overlap_est": overlap_est,
+                            "faith_est": float(faith_est),
+                            "anchor_coverage": float(cov),
+                            "new_hits_ratio": float(new_hits_ratio),
+                            "conflict_risk": float(conf_risk),
+                            "budget_left": int(tokens_left),
+                            "has_reflect_left": bool(has_reflect_left),
+                        },
+                        "thresholds": {
+                            "overlap_tau": settings.OVERLAP_TAU,
+                            "faithfulness_tau": settings.FAITHFULNESS_TAU,
+                            "coverage_min": getattr(
+                                settings, "BAUG_STOP_COVERAGE_MIN", 0.3
+                            ),
+                            "new_hits_eps": settings.NEW_HITS_EPS,
+                        },
+                        "round_idx": round_idx - 1,  # 0-indexed for BAUG
+                        "gate_kind": self.baug.kind(),
+                    },
                     "debug_prompt": debug_prompt if self.debug_mode else "",
                 },
             )
 
-            # Early termination checks within supervisor (CRAG-like)
+            # Early termination checks within supervisor (CR-like)
+            # Only stop early if we have low new hits AND low quality signals
             short_reason: str | None = None
-            if round_idx > 1:
-                if new_hits_ratio < settings.NEW_HITS_EPS:
-                    short_reason = "NO_NEW_HITS"
-                elif (overlap_est - prev_overlap) < settings.EPSILON_OVERLAP:
-                    short_reason = "OVERLAP_STAGNANT"
-                elif (cov - prev_anchor_cov) < settings.ANCHOR_PLATEAU_EPS:
-                    short_reason = "ANCHOR_PLATEAU"
-                elif fine_median < settings.FINE_FILTER_TAU:
-                    short_reason = "FINE_FILTER_FLOOR"
+            if not getattr(settings, "ANCHOR_GATE_ON", True):
+                if (
+                    round_idx > 1 and validators_passed
+                ):  # Only check for early stop if validators are OK
+                    if new_hits_ratio < settings.NEW_HITS_EPS:
+                        short_reason = "NO_NEW_HITS"
+                    elif (overlap_est - prev_overlap) < settings.EPSILON_OVERLAP:
+                        short_reason = "OVERLAP_STAGNANT"
+                    elif (cov - prev_anchor_cov) < settings.ANCHOR_PLATEAU_EPS:
+                        short_reason = "ANCHOR_PLATEAU"
+                    elif fine_median < settings.FINE_FILTER_TAU:
+                        short_reason = "FINE_FILTER_FLOOR"
 
             # One-shot constrained retrieval if anchors missing and budget allows
             if (

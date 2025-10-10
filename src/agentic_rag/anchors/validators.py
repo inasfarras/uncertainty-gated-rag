@@ -16,10 +16,12 @@ from agentic_rag.agent.judge import (
 
 
 def required_anchors(question: str) -> set[str]:
+    """Extract anchors using Judge, with a fallback to qanchors."""
     try:
+        # Use the more sophisticated Judge extractor preferentially
         return set(judge_extract_required_anchors(question))
     except Exception:
-        # Fallback simple heuristic
+        # Fallback to simple heuristic ONLY if judge fails
         from agentic_rag.agent.qanchors import extract_required_anchors as q_extract
 
         return set(q_extract(question))

@@ -20,8 +20,13 @@ class BGECrossEncoder:
             raise ImportError(
                 "FlagEmbedding not installed. Install with: pip install FlagEmbedding"
             )
-        self.reranker = FlagReranker(model_name, use_fp16=use_fp16)
+        import torch
+
+        # Force CUDA device if available
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.reranker = FlagReranker(model_name, use_fp16=use_fp16, device=device)
         self.model_name = model_name
+        print(f"   🚀 BGE Reranker loaded on {device}")
 
     def rerank(
         self, query: str, candidates: list[dict[str, Any]], top_k: int
@@ -40,17 +45,27 @@ class BGECrossEncoder:
         if not candidates:
             return []
 
+        # Get batch size from config
+        from agentic_rag.config import settings
+
+        batch_size = getattr(settings, "RERANK_BATCH_SIZE", 64)
+
         if len(candidates) <= top_k:
             # If we have fewer candidates than requested, just add scores
             pairs = [[query, c["text"]] for c in candidates]
-            scores = self.reranker.compute_score(pairs, normalize=True)
+            # Batch process for speed
+            scores = self.reranker.compute_score(
+                pairs, normalize=True, batch_size=batch_size
+            )
             for c, s in zip(candidates, scores):
                 c["rerank_score"] = float(s)
             return sorted(candidates, key=lambda x: x["rerank_score"], reverse=True)
 
-        # Rerank and select top_k
+        # Rerank and select top_k - batch process all pairs
         pairs = [[query, c["text"]] for c in candidates]
-        scores = self.reranker.compute_score(pairs, normalize=True)
+        scores = self.reranker.compute_score(
+            pairs, normalize=True, batch_size=batch_size
+        )
 
         # Add scores to candidates
         for c, s in zip(candidates, scores):

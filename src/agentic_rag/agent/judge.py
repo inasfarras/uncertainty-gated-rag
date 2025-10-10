@@ -722,54 +722,15 @@ def extract_required_anchors(question: str) -> set[str]:
         if tok in q:
             anchors.add(tok)
     # Heuristic two-word entity (lowercase questions may include proper names)
+    # UPDATED: Use capitalized words from original question as a better heuristic
     try:
-        stop = {
-            "how",
-            "many",
-            "much",
-            "what",
-            "which",
-            "who",
-            "when",
-            "where",
-            "why",
-            "did",
-            "does",
-            "do",
-            "is",
-            "are",
-            "was",
-            "were",
-            "the",
-            "a",
-            "an",
-            "in",
-            "on",
-            "of",
-            "for",
-            "to",
-            "at",
-            "per",
-            "game",
-            "club",
-            "season",
-            "seasons",
-            "average",
-            "averages",
-            "made",
-            "make",
-        }
-        toks = _re.findall(r"[a-z][a-z'\-]+", q)
-        candidates: list[str] = []
-        for i in range(len(toks) - 1):
-            w1, w2 = toks[i], toks[i + 1]
-            if w1 in stop or w2 in stop:
-                continue
-            if len(w1) >= 3 and len(w2) >= 3:
-                candidates.append(f"{w1} {w2}")
-        # Add the longest candidate (if any)
-        if candidates:
-            anchors.add(max(candidates, key=len))
+        caps = _re.findall(
+            r"\b([A-Z][A-Za-z0-9'&.-]+(?:\s+[A-Z][A-Za-z0-9'&.-]+){0,3})\b",
+            question or "",
+        )
+        if caps:
+            # Add longest capitalized span as a candidate anchor
+            anchors.add(max(caps, key=len).lower())
     except Exception:
         pass
     return anchors
