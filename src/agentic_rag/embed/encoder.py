@@ -1,3 +1,4 @@
+import threading
 from typing import cast
 
 import numpy as np
@@ -9,6 +10,7 @@ from agentic_rag.config import settings
 from agentic_rag.models.adapter import get_openai
 
 _st_model_cache: SentenceTransformer | None = None
+_st_model_lock = threading.Lock()
 
 
 def _encoding():
@@ -38,54 +40,74 @@ def _normalize(vecs: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
 
 
 def embed_texts(texts: list[str]) -> npt.NDArray[np.float32]:
+    if not texts:
+        return np.array([], dtype=np.float32).reshape(
+            0, 1536
+        )  # Return empty 2D array if no texts
+
+    # Default embedding dimension for zero-vectors if an embedding fails
+    embedding_dim = 1536  # Default for text-embedding-3-small
+
+    embs_list = []
     if settings.EMBED_BACKEND == "mock":
-        # Mock embeddings: deterministic hash-based vectors
         import hashlib
 
-        embs = []
         for text in texts:
-            # Create deterministic embedding from text hash
             hash_bytes = hashlib.md5(text.encode()).digest()
-            # Convert to float vector (1536 dimensions to match OpenAI)
-            vec = np.frombuffer(hash_bytes * 96, dtype=np.uint8)[:1536].astype(
+            vec = np.frombuffer(hash_bytes * 96, dtype=np.uint8)[:embedding_dim].astype(
                 np.float32
             )
-            # Normalize to [-1, 1] range
             vec = (vec / 127.5) - 1.0
-            embs.append(vec)
-        arr = np.array(embs, dtype=np.float32)
+            embs_list.append(vec)
+        arr = np.array(embs_list, dtype=np.float32)
         return _normalize(arr)
     elif settings.EMBED_BACKEND == "openai":
         client = get_openai()
-        embs = client.embed(texts, embed_model=settings.EMBED_MODEL)
-        arr = np.array(embs, dtype=np.float32)
-        return _normalize(arr)
+        try:
+            embs = client.embed(texts, embed_model=settings.EMBED_MODEL)
+            # Ensure embs is a list of lists or similar for np.array
+            embs_list = [np.array(e, dtype=np.float32) for e in embs]
+            arr = (
+                np.array(embs_list, dtype=np.float32)
+                if embs_list
+                else np.array([], dtype=np.float32).reshape(0, embedding_dim)
+            )
+            return _normalize(arr)
+        except Exception as e:
+            print(f"Error with OpenAI embeddings: {e}. Returning zero vectors.")
+            return np.zeros((len(texts), embedding_dim), dtype=np.float32)
     elif settings.EMBED_BACKEND == "st":
-        # Sentence-transformers: FREE offline embeddings
-        # import torch # Already imported implicitly by SentenceTransformer, but explicit for clarity
-        # from sentence_transformers import SentenceTransformer # Moved to top
         import torch
 
         global _st_model_cache
 
-        # Cache model instance
-        if _st_model_cache is None:
-            model_name = getattr(
-                settings, "ST_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
-            )
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            print(f"Loading sentence-transformers model: {model_name} on {device}")
-            _st_model_cache = SentenceTransformer(model_name, device=device)
+        # Use lock to ensure thread-safe model loading
+        with _st_model_lock:
+            if _st_model_cache is None:
+                model_name = getattr(
+                    settings, "ST_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+                )
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                print(
+                    f"[EMBED] Loading sentence-transformers model: {model_name} on {device}"
+                )
+                _st_model_cache = SentenceTransformer(model_name, device=device)
+                print("[EMBED] Model loaded and cached successfully")
 
-        # Encode texts (with batch processing for efficiency)
         batch_size = getattr(settings, "EMBED_BATCH_SIZE", 32)
-        embs = _st_model_cache.encode(
-            texts,
-            convert_to_numpy=True,
-            show_progress_bar=False,
-            normalize_embeddings=False,  # We normalize ourselves
-            batch_size=batch_size,  # Process multiple texts at once for speed
-        )
-        return _normalize(cast(npt.NDArray[np.float32], embs))
+        try:
+            embs = _st_model_cache.encode(
+                texts,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+                normalize_embeddings=False,
+                batch_size=batch_size,
+            )
+            return _normalize(cast(npt.NDArray[np.float32], embs))
+        except Exception as e:
+            print(
+                f"Error with Sentence-transformers embeddings: {e}. Returning zero vectors."
+            )
+            return np.zeros((len(texts), embedding_dim), dtype=np.float32)
     else:
         raise RuntimeError(f"Unknown embed backend: {settings.EMBED_BACKEND}")
