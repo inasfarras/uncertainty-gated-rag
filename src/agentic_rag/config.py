@@ -128,6 +128,21 @@ class Settings(BaseSettings):
     GATE_RETRIEVAL_K_BONUS: int = 4
     GATE_SEED_MISSING_ANCHORS: bool = True
 
+    # New BAUG-specific thresholds
+    TAU_OVERLAP: float = 0.35
+    TAU_FAITH: float = 0.55
+    TAU_COVERAGE: float = 0.55
+    EPS_NEW_HITS: float = 0.12
+    LAMBDA_MIN_GAIN: float = 0.05
+    SENTENCE_SUPPORT_TAU: float = 0.65
+    # MMR_LAMBDA: float = 0.7
+    MAX_CONTEXTS: int = 10
+    P_ERROR_ABSTAIN_TAU: float = 0.50
+    BAUG_ANCHOR_GATE_ON: bool = True  # Renamed to avoid clash with ANCHOR_GATE_ON
+
+    # Legacy gate (keep for baseline comparison if needed)
+    # ANCHOR_GATE_ON: bool = False
+
     # Scoring/analysis toggles
     USE_FINAL_SHORT_SCORING: bool = True
     FINAL_SHORT_ALLOW_ENTITY: bool = (

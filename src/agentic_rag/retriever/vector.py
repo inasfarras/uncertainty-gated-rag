@@ -66,26 +66,26 @@ class VectorRetriever:
                     hasattr(loaded, "is_schema_compatible")
                     and not loaded.is_schema_compatible()
                 ):
-                    print("   ⚠️  BM25 index schema outdated → rebuilding...")
+                    print("   [!] BM25 index schema outdated -> rebuilding...")
                     self.bm25_retriever = create_bm25_index(faiss_dir, bm25_index_path)
-                    print("   📚 BM25 index rebuilt and saved")
+                    print("   [+] BM25 index rebuilt and saved")
                 else:
                     self.bm25_retriever = loaded
-                    print("   📚 Loaded existing BM25 index for hybrid search")
+                    print("   [+] Loaded existing BM25 index for hybrid search")
             # Print corpus size for visibility
             if self.bm25_retriever:
                 try:
-                    print(f"   📊 BM25 corpus size: {self.bm25_retriever.corpus_size}")
+                    print(f"   [i] BM25 corpus size: {self.bm25_retriever.corpus_size}")
                 except Exception:
                     pass
             else:
                 # Create new BM25 index
-                print("   📚 Creating BM25 index for hybrid search...")
+                print("   [+] Creating BM25 index for hybrid search...")
                 self.bm25_retriever = create_bm25_index(faiss_dir, bm25_index_path)
-                print("   📚 BM25 index created and saved")
+                print("   [+] BM25 index created and saved")
 
         except Exception as e:
-            print(f"   ❌ Failed to initialize BM25 retriever: {e}")
+            print(f"   [!] Failed to initialize BM25 retriever: {e}")
             self.use_hybrid = False
             self.bm25_retriever = None
 
@@ -112,7 +112,7 @@ class VectorRetriever:
                 import os as _os
 
                 if _os.getenv("DEBUG_BM25_TOP"):
-                    print("   🧪 BM25 top:", [cid for cid, _ in bm25_hits[:3]])
+                    print("   [*] BM25 top:", [cid for cid, _ in bm25_hits[:3]])
             except Exception:
                 pass
 
@@ -125,7 +125,7 @@ class VectorRetriever:
         )
 
         print(
-            f"   🔍 Hybrid search: {len(vector_hits)} vector + {len(bm25_hits)} BM25 → {len(combined_results)} combined"
+            f"   [*] Hybrid search: {len(vector_hits)} vector + {len(bm25_hits)} BM25 -> {len(combined_results)} combined"
         )
 
         return combined_results[:pool_k]
@@ -293,30 +293,30 @@ class VectorRetriever:
         # Step 1: HyDE query rewriting (only for RETRIEVE_MORE rounds)
         search_query = query
         if should_use_hyde(round_idx, settings.USE_HYDE, query) and llm_client:
-            print("   🔮 Generating HyDE query...")
+            print("   [*] Generating HyDE query...")
             hyde_result = hyde_query(query, llm_client)
             if hyde_result:
                 search_query = hyde_result
-                print(f"   🔮 HyDE query: {hyde_result[:100]}...")
+                print(f"   [*] HyDE query: {hyde_result[:100]}...")
             else:
-                print("   🔮 HyDE generation failed, using original query")
+                print("   [!] HyDE generation failed, using original query")
 
         # Step 2: Retrieval with hybrid search if enabled
         qvec = embed_texts([search_query])[0]  # Always embed query once
         if self.use_hybrid and self.bm25_retriever:
-            print("   🔍 Performing hybrid search (Vector + BM25)...")
+            print("   [*] Performing hybrid search (Vector + BM25)...")
             # For hybrid search, hits already contain the text, so pass that along
             raw_hits = self._hybrid_search(search_query, k, probe_factor)
             # Convert raw_hits to (chunk_id, score) for compatibility with downstream logic
             hits: list[tuple[str, float, str]] = raw_hits
         else:
-            print("   🔍 Embedding query and searching...")
+            print("   [*] Embedding query and searching...")
             pool_k = (
                 settings.RETRIEVAL_POOL_K
                 if (settings.USE_RERANK or settings.MMR_LAMBDA > 0)
                 else max(k, probe_factor * k)
             )
-            print(f"   🔍 Searching for {pool_k} candidates...")
+            print(f"   [*] Searching for {pool_k} candidates...")
             raw_hits_list = self.store.search(qvec, pool_k)
             hits = [
                 (chunk_id, score, self.chunks.loc[chunk_id, "text"])
@@ -605,7 +605,7 @@ class VectorRetriever:
         if settings.MMR_LAMBDA > 0 and len(candidates) > k:
             try:
                 print(
-                    f"   🎯 Applying MMR diversification (λ={settings.MMR_LAMBDA}) {len(candidates)} → {k}..."
+                    f"   [*] Applying MMR diversification (lambda={settings.MMR_LAMBDA}) {len(candidates)} -> {k}..."
                 )
                 selected_candidates = mmr_select(
                     qvec, [dict(c) for c in candidates], k, settings.MMR_LAMBDA
@@ -613,15 +613,15 @@ class VectorRetriever:
                 # Filter candidates to keep only those selected by MMR
                 selected_ids = {c["chunk_id"] for c in selected_candidates}
                 candidates = [c for c in candidates if c["chunk_id"] in selected_ids]
-                print("   🎯 MMR selection completed")
+                print("   [+] MMR selection completed")
             except Exception as e:
-                print(f"   ❌ MMR selection failed, using top-k: {e}")
+                print(f"   [!] MMR selection failed, using top-k: {e}")
                 candidates = candidates[:k]
         else:
             # Just take top-k by score
             candidates.sort(key=lambda x: x["score"], reverse=True)
             candidates = candidates[:k]
-            print(f"   📋 Selected top-{k} by score")
+            print(f"   [+] Selected top-{k} by score")
 
         # Step 6: Prepare blocks for packing
         blocks: list[ContextBlock] = []

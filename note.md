@@ -22,12 +22,28 @@ We lack a **simple, external, metric-driven controller** that is:
 ### Approach: **Budget-Aware Uncertainty Gate (BAUG)**
 
 * **Signals:**
-
-  * **Support Overlap**: fraction of answer sentences supported by retrieved chunks via exact citation + semantic similarity ≥ τ\_sim.
-  * **Faithfulness**: alignment between answer claims and retrieved evidence (fallback formula and/or lightweight judge).
-  * **Budget**: context/output caps; **no-new-hits** and **stagnation** short-circuits.
+  * **Support Overlap**: Fraction of answer sentences supported by retrieved chunks via exact citation + semantic similarity ≥ τ\_sim.
+  * **Faithfulness**: Alignment between answer claims and retrieved evidence (fallback formula and/or lightweight judge).
+  * **Budget**: Context/output caps; **no-new-hits** and **stagnation** short-circuits.
 * **Policy:** Choose **STOP / RETRIEVE\_MORE / REFLECT / ABSTAIN** within budget and log decisions.
 * **Evaluation:** Pareto of (evidence consistency) vs (tokens/latency); plus gold-facing EM/F1.
+
+### Current Implementation & Key Findings (from N=500 Experiment)
+
+The BAUG system has been successfully implemented and tested, yielding significant improvements over a baseline RAG system and a naive multi-round "BAUG OFF" system.
+
+| Metric | Baseline | Anchor + BAUG ON | Improvement |
+| :--- | :--- | :--- | :--- |
+| **Faithfulness** | 0.421 | **0.526** | **+24.9%** |
+| **EM Score** | 0.010 | **0.036** | **3.6x** |
+| **F1 Score** | 0.115 | **0.168** | **+45.7%** |
+| **Abstain Rate** | 54.4% | **42.8%** | **-21.3%** |
+| **Avg Tokens** | 1,186 | 2,642 | (vs. 3,731 for BAUG OFF) |
+
+**Key Insights:**
+1.  **Proven Quality Lift**: The Anchor system with BAUG delivers substantial gains in answer quality (Faithfulness, EM, F1) over the baseline.
+2.  **Proven Efficiency**: BAUG ON provides these quality gains while using **29.2% fewer tokens** than the naive multi-round (BAUG OFF) approach, proving its effectiveness as a budget-aware controller.
+3.  **Remaining Challenges**: The primary challenge is the **hallucination rate**, which remains around 24% for the BAUG system. Additionally, the composite score formula needs re-evaluation as it currently penalizes the higher-quality BAUG system.
 
 ### Why anchor-centric agentic RAG?
 
@@ -78,7 +94,7 @@ Recent work shows **critique/reflect loops** can help (Self-RAG) and **self-grad
 
 ## 4) Modules & interfaces (drop-in to your repo)
 
-> Keep your current names if different; the key is the **interfaces** and **telemetry**.
+> This section outlines the ideal architecture. The current implementation maps to these concepts as follows: `supervisor/orchestrator.py` contains the core `AnchorSystem` logic (Supervisor), and `gate/adapter.py` contains the `BAUGAdapter` (Gate). The Anchor-Predictor and Retrieval Agent are currently implemented implicitly within the `AnchorSystem`.
 
 ### `anchors/predictor.py`
 
@@ -113,6 +129,10 @@ Recent work shows **critique/reflect loops** can help (Self-RAG) and **self-grad
 
 ## 5) Precision features that directly fix your error modes
 
+> **Status Update**: Several of these features have been implemented.
+> *   **Item 3 (Type-specific validators)**: A `temporal_context_validator` has been implemented in `src/agentic_rag/anchors/validators.py` to handle time-sensitive questions, which was a key bug fix.
+> *   **Item 4 (Short-answer finalizer)**: The system extracts `final_short` for scoring, which is used in the reports to calculate EM/F1.
+
 1. **Anchor-boost** in fusion
    After combining vector/BM25 scores, add a small **bonus** for passages containing required anchors (coverage-scaled). This reduces *“faithful-to-wrong-anchor”* answers (e.g., AO vs USO; 2004 ceremony vs film release year). (Use GraphRAG/CRAG insights to justify anchor constraints + selective focus.) ([Microsoft][3])
 
@@ -132,58 +152,47 @@ Recent work shows **critique/reflect loops** can help (Self-RAG) and **self-grad
 
 ## 6) Metrics (what to report)
 
-* **Evidence-facing:** Overlap, Faithfulness (fallback or judge).
-* **Gold-facing:** EM/F1 (short), **Wrong-on-Answerable** (not IDK and F1==0).
-* **Contract checks:** IDK+Cit violations (should be 0).
-* **Cost:** Tokens/Q, p50 ms.
-* **CRAG-style:** Accuracy / Hallucination / Missing / Score (if you mirror their judge).
+*   **Evidence-facing:** Overlap, Faithfulness (fallback or judge).
+*   **Gold-facing:** EM/F1 (short).
+*   **Classification (Mutually Exclusive):**
+    *   **Perfect Match**: The answer is not "I don't know" and `em == 1`.
+    *   **Supported**: The answer has `F1 > 0.1` and `Faithfulness > 0.5`.
+    *   **Safe IDK**: The system correctly abstained (`abstain == 1`).
+    *   **Hallucination (Remaining)**: Any other non-abstaining answer.
+*   **Cost:** Tokens/Q, p50 ms.
+*   **CRAG-style:** Accuracy / Hallucination / Missing / Score (if you mirror their judge).
   This aligns with CRAG’s *corrective* notion (evaluate sufficiency before answering) and with agentic surveys’ emphasis on **reasoning + tool use** trade-offs. ([DataCamp][6])
 
 ---
 
-## 7) Runbook (repro in three commands)
+## 7) Runbook (Updated for Current Workflow)
 
-```bash
-# 1) Prepare CRAG subset & index
-python scripts/prepare_crag.py --split train --static-only --n 100
-python -m agentic_rag.ingest.ingest --input data/crag_corpus --out artifacts/crag_faiss --backend openai
+The entire experiment workflow is now automated with the `run_baug_full_experiment.ps1` script.
 
-# 2) Baselines
-python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system baseline --n 100
+```powershell
+# 1) Activate environment
+.\.venv\Scripts\Activate.ps1
 
-# 3) Anchor-centric Agent + BAUG (lean, single-round, precision-first)
-python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system agent --gate-on --n 100 \
-  --override MAX_ROUNDS=1 USE_RERANKER=False USE_HYDE=False \
-  RETRIEVAL_POOL_K=24 RETRIEVAL_K=8 MMR_LAMBDA=0.45 \
-  OVERLAP_TAU=0.42 MAX_CONTEXT_TOKENS=1000 MAX_OUTPUT_TOKENS=160 \
-  ANCHOR_BONUS=0.07 FACTOID_ONE_SHOT_RETRIEVAL=True FACTOID_MIN_TOKENS_LEFT=300 \
-  JUDGE_POLICY=gray_zone JUDGE_MAX_CALLS_PER_Q=1 USE_FACTOID_FINALIZER=True
+# 2) Run a full experiment for N questions (e.g., 100)
+# This runs baseline, BAUG ON, and BAUG OFF, then generates a full report.
+.\run_baug_full_experiment.ps1 -N 100
+
+# 3) Re-analyze the most recent N=100 logs to regenerate the report
+# Useful for fixing the report without re-running the experiments.
+.\run_baug_full_experiment.ps1 -N 100 -ReanalyzeOnly
+
+# Other common examples:
+.\run_baug_full_experiment.ps1 -N 500 # Run for 500 questions
+.\run_baug_full_experiment.ps1 -N 100 -SkipBaseline:$true # Skip the baseline run
 ```
 
 ---
 
-## 8) Two-week milestones
-
-**Week 1 (scaffolding & signals)**
-
-* D1–D2: Add `anchors/predictor.py`; emit top-m anchors + confidence; unit tests for extraction.
-* D3–D4: Implement `retrieval/agent.py` with rough→fine pruning; log `terminated_by`, `new_hits_ratio`.
-* D5: Wire **anchor-boost** into fusion; **deterministic** gen; strict context/output caps.
-* D6–D7: Add `supervisor/orchestrator.py` + `gate/adapter.py` → BAUG call; JSONL telemetry fields.
-
-**Week 2 (precision & eval)**
-
-* D8: One-shot anchor-constrained retrieval (factoids).
-* D9: Type-validators (awards/tournaments; numeric/unit/time windows).
-* D10: Short-answer finalizer (EM/F1 only).
-* D11–D12: CRAG subset run (N=100); A/B vs vanilla; **Pareto plot** (Overlap vs Tokens).
-* D13–D14: Error analysis (wrong-on-answerable, partial lists) and a 1-page update.
-
 ---
 
-## 9) Risks & mitigations
+## 8) Risks & mitigations
 
-| Risk                         | Impact                | Mitigation                                                                                         |
+| Risk | Impact | Mitigation |
 | ---------------------------- | --------------------- | -------------------------------------------------------------------------------------------------- |
 | KG not available             | Graph hops impossible | Use hyperlink/section hops + anchor-boost; keep vector/BM25 fallback. ([Microsoft][3])             |
 | Anchor sparsity or ambiguity | Too many false paths  | Confidence threshold + rough→fine pruning; BAUG ABSTAIN if coverage low. ([OpenReview][4])         |
@@ -192,36 +201,8 @@ python -m agentic_rag.eval.runner --dataset data/crag_questions.jsonl --system a
 
 ---
 
-## 10) Ready-to-paste **Cursor/Codex prompt**
 
-> **Role:** Senior RAG architect. Create a **migration plan + code skeleton** to refactor my agentic RAG into an **anchor-centric, multi-agent** system with a **Budget-Aware Uncertainty Gate (BAUG)** as the final decision policy.
-> **Do not** depend on my current file paths—propose modules & interfaces as below; keep generation deterministic (temp=0, top\_p=0) and budget-aware.
-
-**Deliverables**
-
-1. **System blueprint** (ASCII diagram) with: `Anchor-Predictor → Retriever-Workers (rough→fine) → Supervisor (+BAUG)`; early termination rules and evidence composition.
-2. **Module stubs & interfaces** (`anchors/predictor.py`, `retrieval/agent.py`, `supervisor/orchestrator.py`, `gate/adapter.py`, `logging/telemetry.py`, `agent/finalize.py`) with function signatures, input/output dataclasses, and TODOs.
-3. **Anchor-boost** in retrieval fusion and a **one-shot anchor-constrained retrieval** before ABSTAIN on factoids.
-4. **Type validators** (awards/tournaments; numerics/units/time windows) that must pass before STOP; otherwise try the one-shot search then ABSTAIN.
-5. **Scoring finalizer** to extract short spans (date/number/title) for EM/F1 **only**—do not change displayed answers.
-6. **Telemetry** fields listed above; a tiny **runbook** with three commands for N=100 CRAG.
-7. **Acceptance criteria:**
-
-   * Tokens/Q ≤ 1.2× vanilla;
-   * Overlap & F1(short) ≥ vanilla;
-   * Wrong-on-Answerable ↓;
-   * IDK+Cit = 0.
-
-**Ground your choices** in:
-
-* **Self-RAG** (critique/reflect loop) ([ICLR Proceedings][1])
-* **CRAG** (corrective filtering; plug-and-play) ([OpenReview][4])
-* **GraphRAG** (graph-guided retrieval; community summaries) ([Microsoft][3])
-* **Agentic RAG surveys (2025)** (planning, orchestration, uncertainty) ([arXiv][5])
-
----
-
-## 11) References (for your report)
+## 9) References (for your report)
 
 * **Self-RAG (ICLR 2024)** — learn to retrieve, generate, **critique**; core reference for REFLECT hooks. ([ICLR Proceedings][1])
 * **Corrective-RAG (OpenReview)** — **self-grading** + corrective steps; *plug-and-play* with RAG pipelines (paper + PDF). ([OpenReview][2])

@@ -15,6 +15,7 @@ from agentic_rag.anchors.validators import (
     AWARD_TOKENS,
     award_tournament_requirements,
     list_requirements,
+    temporal_context_validator,
     units_time_requirements,
 )
 from agentic_rag.anchors.validators import (
@@ -41,7 +42,12 @@ from agentic_rag.models.adapter import ChatMessage, OpenAIAdapter, get_openai
 from agentic_rag.prompting import ContextBlock, pack_context
 from agentic_rag.prompting_reflect import build_reflect_prompt, should_reflect
 from agentic_rag.retrieval.agent import Path, RetrievalAgent
+from agentic_rag.retrieval.mmr import mmr_rerank  # New import
 from agentic_rag.telemetry.recorder import log_round, log_summary
+from agentic_rag.utils.telemetry import (  # New import
+    aggregate_telemetry_results,
+    log_baug_round,
+)
 from agentic_rag.utils.timing import timer
 
 
@@ -53,7 +59,7 @@ def _build_prompt(
     system = (
         "You answer ONLY using the provided CONTEXT.\n"
         "If information is missing, answer EXACTLY: I don't know.\n"
-        "Limit your answer to 1–2 sentences.\n"
+        "Limit your answer to 1–3 sentences.\n"
         "Each non-IDK sentence MUST include exactly one citation in the form [CIT:<doc_id>].\n"
         "If you answer I don't know (or Tidak tahu), do not include any citation.\n"
         "Citation format must be exactly [CIT:<doc_id>] where <doc_id> matches the CTX header and uses only letters, digits, _, or -.\n"
@@ -76,6 +82,24 @@ def _normalize_answer(text: str, allowed_ids: list[str]) -> str:
 
     allowed: set[str] = set(allowed_ids)
 
+    # --- Citation Validation (only if BAUG is ON) ---
+    if settings.BAUG_ANCHOR_GATE_ON:
+        cleaned_sentences = []
+        sentences = re.split(r"(?<=[.!?]) +(?=[A-Z])", t)  # Split into sentences
+        for sentence in sentences:
+            # Check if a non-IDK sentence has at least one citation
+            if not is_idk(sentence) and not CIT_RE.search(sentence):
+                # If no citation and not IDK, skip or mark for removal
+                # For now, we will simply not include this sentence.
+                continue
+            cleaned_sentences.append(sentence)
+
+        if not cleaned_sentences and not is_idk(
+            t
+        ):  # If all sentences were removed and original wasn't IDK
+            return "I don't know"  # Indicate failure to provide supported answer
+        t = " ".join(cleaned_sentences)
+
     def _repl(m: Any) -> str:  # type: ignore[no-redef]
         cid = m.group("id")
         return m.group(0) if cid in allowed else ""
@@ -84,6 +108,58 @@ def _normalize_answer(text: str, allowed_ids: list[str]) -> str:
         return CIT_RE.sub(_repl, t)
     except Exception:
         return t
+
+
+def try_single_citation_fix(
+    draft: str, per_sent_support: list[dict[str, Any]], ctx_map: dict[str, str]
+) -> str:
+    """
+    Attempts to fix sentences with low support by finding a strong, single citation.
+    If a sentence has low support and a strong context is available, it adds a citation.
+    Otherwise, the sentence might be removed or the overall answer marked as IDK.
+    For this iteration, we focus on identifying and marking problematic sentences for potential removal.
+    """
+    # This is a placeholder. Full implementation would involve re-prompting or more complex logic.
+    # For now, it will identify unsupported sentences.
+    fixed_sentences = []
+    for sentence_data in per_sent_support:
+        sentence = sentence_data["sentence"]
+        support_score = sentence_data["support"]
+        citations = sentence_data["citations"]
+
+        if (
+            support_score < settings.SENTENCE_SUPPORT_TAU and not citations
+        ):  # Low support and no citations
+            # Try to find a strong single citation for this sentence
+            best_cid = None
+            max_sim = 0.0
+            # In a real scenario, we might re-embed the sentence and compare to context embeddings
+            # For simplicity, we'll just check for keyword overlap with context texts
+            sentence_lower = sentence.lower()
+            for cid, ctx_text in ctx_map.items():
+                ctx_lower = ctx_text.lower()
+                # Simple overlap check
+                current_sim = sum(
+                    1 for word in sentence_lower.split() if word in ctx_lower
+                ) / len(sentence_lower.split())
+                if current_sim > max_sim:
+                    max_sim = current_sim
+                    best_cid = cid
+
+            if (
+                best_cid and max_sim >= settings.SENTENCE_SUPPORT_TAU
+            ):  # If we found a good enough single citation
+                fixed_sentences.append(f"{sentence} [CIT:{best_cid}]")
+            else:
+                # Mark for removal or indicate lack of support
+                fixed_sentences.append(
+                    f"[UNSUPPORTED]{sentence}"
+                )  # Placeholder to indicate lack of support
+        else:
+            fixed_sentences.append(sentence)
+
+    # Reconstruct the draft. Sentences marked [UNSUPPORTED] might be removed later.
+    return " ".join(fixed_sentences)
 
 
 class AnchorSystem:
@@ -143,12 +219,35 @@ class AnchorSystem:
         final_action = "INIT"
         has_reflect_left = True
         prev_overlap = 0.0
+        prev_faith = 0.0  # Initialize prev_faith
+        tokens_last_round_val = 0  # Initialize tokens_last_round
         prev_anchor_cov = 0.0
         did_constrained_retrieval = False
+        baug_reasons: list[str] = []
+        has_targeted_hop_left = True  # New flag for targeted anchor hop
+        cov: float = 0.0  # Initialize anchor coverage
+        present: set[str] = set()  # Initialize present anchors
+        missing: set[str] = set()  # Initialize missing anchors
+        overlap_est: float = 0.0  # Initialize overlap estimate
+        faith_est: float = 0.0  # Initialize faithfulness estimate
+        new_hits_ratio: float = 0.0  # Initialize new hits ratio
+        conf_risk: float = 0.0  # Initialize conflict risk
+        fine_median: float = 0.0  # Initialize fine median
+        validators_passed: bool = True  # Initialize validators passed
+        judge_extras: dict[str, Any] = {}  # Initialize judge extras
+        contexts: list[dict[str, Any]] = []  # Initialize contexts
+        final_short: str | None = None  # Initialize final short answer
+        context_tokens: int = 0  # Initialize context tokens count
+        n_blocks: int = 0  # Initialize number of context blocks
+        short_reason: str | None = None  # Initialize short reason for early stop
+        lexical_uncertainty: float = 0.0
+        completeness: float = 1.0
+        semantic_coherence: float = 1.0
 
         # Simple loop bounded by MAX_ROUNDS
         while round_idx < settings.MAX_ROUNDS and tokens_left > 0:
             round_idx += 1
+
             # Explore per anchor (parallel, one hop)
             paths: list[Path] = []
             max_workers = max(1, min(settings.MAX_WORKERS, len(selected_anchors)))
@@ -227,8 +326,90 @@ class AnchorSystem:
             except Exception:
                 pass
 
+            # --- Targeted Anchor Hop (after R1 if coverage is low) ---
+            # This happens BEFORE packing and generation, allowing BAUG to re-evaluate.
+            if (
+                round_idx == 1
+                and cov < settings.TAU_COVERAGE
+                and has_targeted_hop_left
+                and settings.BAUG_ANCHOR_GATE_ON
+            ):
+                # Use missing anchors to perform a targeted retrieval
+                # For now, just pick the top 2 missing anchors
+                top_missing_anchors = list(missing)[:2]
+                if top_missing_anchors:
+                    # Perform exploration for missing anchors (single hop)
+                    print(f"Performing targeted anchor hop for: {top_missing_anchors}")
+                    hop_paths: list[Path] = []
+                    with ThreadPoolExecutor(
+                        max_workers=max(1, len(top_missing_anchors))
+                    ) as ex:
+                        hop_futs = [
+                            ex.submit(
+                                self.retriever.explore, a, question, 1, seen_doc_ids
+                            )
+                            for a in top_missing_anchors
+                        ]
+                        for fut in as_completed(hop_futs):
+                            try:
+                                res = fut.result()
+                                hop_paths.extend(res)
+                            except Exception:
+                                continue
+
+                    # Merge hop contexts into all_ctx
+                    for p in hop_paths:
+                        for c in p.get("passages", []):
+                            doc_id = c.get("id", "")
+                            meta = self.meta_map.get(doc_id, {})
+                            all_ctx.append(
+                                {
+                                    "id": doc_id,
+                                    "text": c.get("text", ""),
+                                    "score": float(c.get("score", 0.0)),
+                                    "url": meta.get("url"),
+                                    "title": meta.get("title"),
+                                    "rank": meta.get("rank"),
+                                }
+                            )
+                        retrieved_ids.extend(p.get("doc_ids", []))
+
+                    # Recompute coverage and related metrics after the hop
+                    if all_ctx:
+                        try:
+                            cov, present, missing = anchor_coverage(
+                                question, [c.get("text", "") for c in all_ctx]
+                            )
+                        except Exception:
+                            cov, present, missing = 0.0, set(), set()
+
+                    has_targeted_hop_left = False  # Only one targeted hop allowed
+                    baug_reasons.append("targeted_anchor_hop_performed")
+
             # Fine filter summary
             fine_median = float(np.median(fine_scores_all)) if fine_scores_all else 0.0
+
+            # --- MMR Reranking and Context Cap ---
+            # Perform MMR reranking before context packing to get the most diverse and relevant set
+            if all_ctx:
+                # Need to ensure all_ctx items have 'embedding' or 'vec' for MMR.
+                # If not present, generate them here or earlier.
+                # For now, assuming they have 'fine_sim' as a score proxy and will generate embeddings if needed.
+                for blk in all_ctx:
+                    if "embedding" not in blk and "vec" not in blk and "text" in blk:
+                        # Generate embeddings on-the-fly for MMR if not already present
+                        blk["embedding"] = embed_texts([blk["text"]])[0]
+                    # Ensure a score is present for MMR
+                    if "score" not in blk:
+                        blk["score"] = blk.get(
+                            "fine_sim", 0.0
+                        )  # Use fine_sim as default score
+
+                all_ctx = mmr_rerank(
+                    all_ctx,
+                    top_k=settings.MAX_CONTEXTS,
+                    lambda_diversity=settings.MMR_LAMBDA,
+                )
 
             # Pack under context token cap using uniform fine-sim to the question
             # Compute fine similarity for each candidate block to make scores comparable across anchors
@@ -465,6 +646,96 @@ class AnchorSystem:
                 (len(new_hits) / max(1, len(retrieved_ids))) if retrieved_ids else 0.0
             )
 
+            # --- BAUG Pre-step: Should we generate? ---
+            # Re-construct signals with latest metrics for BAUG pre-generation decision
+            baug_signals = {
+                "overlap_est": overlap_est,
+                "faith_est": float(faith_est),
+                "new_hits_ratio": float(new_hits_ratio),
+                "anchor_coverage": float(cov),
+                "conflict_risk": float(conf_risk),
+                "budget_left": int(tokens_left),
+                "round_idx": round_idx,  # Current round
+                "has_reflect_left": has_reflect_left,
+                "lexical_uncertainty": lexical_uncertainty,
+                "completeness": completeness,
+                "semantic_coherence": semantic_coherence,
+                "answer_length": len(draft),
+                "question_complexity": 0.5,
+                "intent_confidence": float(intent.intent_confidence),
+                "slot_completeness": float(intent.slot_completeness),
+                "source_of_intent": intent.source_of_intent,
+                "validators_passed": bool(validators_passed),
+                "extras": judge_extras,
+                "fine_median": fine_median,
+                "prev_overlap": prev_overlap,
+                "prev_faith": prev_faith,
+                "tokens_last_round": tokens_last_round_val,  # From previous round
+                "last_action": final_action,
+            }
+            # Gate control: allow disabling BAUG via settings.BAUG_ANCHOR_GATE_ON
+            if getattr(settings, "BAUG_ANCHOR_GATE_ON", True):
+                action = self.baug.decide(baug_signals)
+                baug_reasons = self.baug.last_reasons()
+            else:
+                action = "GO"  # Always generate if gate is off
+                baug_reasons = ["gate_off"]
+            final_action = action
+
+            if action == "SKIP":
+                draft = "I don't know"  # No generation, so set to IDK
+                # Log this pre-generation skip decision
+                # We need a simplified log_round here as full metrics won't be available
+                log_round(
+                    qid,
+                    round_idx,
+                    {
+                        "system": "anchor",
+                        "action": action,
+                        "baug_reasons": baug_reasons,
+                        "gate_kind": self.baug.kind(),
+                        "gate_last_decision": self.baug.last_decision() or "",
+                        "baug_decision": {
+                            "action": action,
+                            "reasons": baug_reasons,
+                            "signals": baug_signals,
+                            "thresholds": {},
+                            "round_idx": round_idx,
+                            "gate_kind": self.baug.kind(),
+                        },
+                        "debug_prompt": "BAUG decided to SKIP generation",
+                        "total_tokens": total_tokens,
+                        "latency_ms": 0,  # No LLM call, so 0 latency
+                        "tokens_left": tokens_left,
+                    },
+                )
+                # Log to new telemetry system
+                if (
+                    settings.BAUG_ANCHOR_GATE_ON
+                ):  # Only log BAUG decisions if gate is on
+                    log_baug_round(
+                        settings.log_dir,
+                        qid,
+                        round_idx,
+                        action,
+                        baug_reasons,
+                        {
+                            **baug_signals,
+                            "latency_ms": 0,
+                            "total_tokens": total_tokens,
+                            "tokens_last_round": tokens_last_round_val,
+                        },  # Merge current total tokens and prev round tokens
+                        {
+                            "action": action,
+                            "reasons": baug_reasons,
+                            "signals": baug_signals,
+                            "thresholds": {},
+                            "round_idx": round_idx,
+                            "gate_kind": self.baug.kind(),
+                        },
+                    )
+                break  # Skip generation and terminate
+
             # Build prompt and get a draft answer (single generation per round)
             messages, debug_prompt = _build_prompt(contexts, question)
             with timer() as tmr:
@@ -475,9 +746,12 @@ class AnchorSystem:
                 )
             llm_calls += 1
             latency_ms = tmr()
-            latencies.append(latency_ms)
-            total_tokens += usage.get("total_tokens", 0)
-            tokens_left -= usage.get("total_tokens", 0)
+            latencies.append(int(latency_ms))  # ADD THIS LINE
+            tokens_last_round_val = usage.get(
+                "total_tokens", 0
+            )  # Update tokens_last_round_val
+            total_tokens += tokens_last_round_val
+            tokens_left -= tokens_last_round_val
 
             # Normalize answer citations
             context_ids = [str(c.get("id", "")) for c in contexts]
@@ -496,6 +770,68 @@ class AnchorSystem:
                 if faith_ragas is not None
                 else min(1.0, 0.6 + 0.4 * overlap_est)
             )
+
+            # --- Sentence-Support Gate and Citation Fix ---
+            # TODO: Currently disabled - sentence_support() returns aggregate metrics, not per-sentence data
+            # Need to implement proper per-sentence validation
+            if False and settings.BAUG_ANCHOR_GATE_ON and draft and not is_idk(draft):
+                per_sent_support = sentence_support(
+                    draft, ctx_map, tau_sim=settings.OVERLAP_SIM_TAU
+                )
+
+                unsupported_sentences = [
+                    s
+                    for s in per_sent_support
+                    if s["support"] < settings.SENTENCE_SUPPORT_TAU
+                    and not s["citations"]
+                ]
+
+                if unsupported_sentences:
+                    # Attempt to fix unsupported sentences
+                    fixed_draft = try_single_citation_fix(
+                        draft, per_sent_support, ctx_map
+                    )
+
+                    # Filter out sentences explicitly marked as unsupported if the fix didn't work
+                    cleaned_sentences = [
+                        s for s in fixed_draft.split(" ") if "[UNSUPPORTED]" not in s
+                    ]
+                    if (
+                        not cleaned_sentences
+                    ):  # If all sentences are unsupported after attempted fix
+                        draft = "I don't know"
+                        final_action = "ABSTAIN"  # Decision to abstain due to lack of supported sentences
+                        baug_reasons.append("abstain_unsupported_sentences")
+                        # Log this decision
+                        log_round(
+                            qid,
+                            round_idx,
+                            {
+                                "system": "anchor",
+                                "action": final_action,
+                                "baug_reasons": baug_reasons,
+                                "gate_kind": self.baug.kind(),
+                                "gate_last_decision": self.baug.last_decision() or "",
+                                "baug_decision": {
+                                    "action": final_action,
+                                    "reasons": baug_reasons,
+                                    "signals": baug_signals,
+                                    "thresholds": {},
+                                    "round_idx": round_idx,
+                                    "gate_kind": self.baug.kind(),
+                                },
+                                "debug_prompt": "BAUG decided to ABSTAIN due to unsupported sentences",
+                                "total_tokens": total_tokens,
+                                "latency_ms": latency_ms,
+                                "tokens_left": tokens_left,
+                            },
+                        )
+                        break
+                    else:
+                        draft = " ".join(
+                            cleaned_sentences
+                        )  # Update draft with supported sentences
+                        baug_reasons.append("sentence_support_fixed")
 
             # Anchor validators and judge (gray-zone policy ≤ 1 call)
             try:
@@ -525,19 +861,22 @@ class AnchorSystem:
             award_req = award_tournament_requirements(question, texts_for_validation)
             numeric_req = units_time_requirements(question, texts_for_validation)
             list_req = list_requirements(question, texts_for_validation)
+            temporal_val = temporal_context_validator(question, texts_for_validation)
             validators_passed = not (
                 award_req.get("missing")
                 or numeric_req.get("missing")
                 or list_req.get("missing")
+                or temporal_val.get("has_conflicting_dates", False)  # ADD THIS
             )
             validators_snapshot = {
                 "award": award_req,
                 "numeric": numeric_req,
                 "list": list_req,
+                "temporal": temporal_val,  # ADD THIS
                 "passed": validators_passed,
             }
             validators_state.update(validators_snapshot)
-            judge_extras: dict[str, Any] = {"validators": validators_snapshot.copy()}
+            judge_extras = {"validators": validators_snapshot.copy()}
             if (settings.JUDGE_POLICY == "always") or (
                 settings.JUDGE_POLICY == "gray_zone"
                 and not used_judge
@@ -621,10 +960,13 @@ class AnchorSystem:
                 action = self.baug.decide(baug_signals)
                 baug_reasons = self.baug.last_reasons()
             else:
-                # When gate is OFF: follow a simple policy
-                # - If more rounds allowed, request RETRIEVE_MORE, else STOP
-                action = "RETRIEVE_MORE" if round_idx < settings.MAX_ROUNDS else "STOP"
-                baug_reasons = ["gate_off"]
+                # When gate is OFF: run a naive multi-round system up to MAX_ROUNDS
+                if round_idx < settings.MAX_ROUNDS:
+                    action = "RETRIEVE_MORE"
+                    baug_reasons = ["gate_off_naive_multi_round"]
+                else:
+                    action = "STOP"
+                    baug_reasons = ["gate_off_max_rounds"]
             baug_signals["baug_reasons"] = baug_reasons
             final_action = action
 
@@ -693,8 +1035,8 @@ class AnchorSystem:
 
             # Early termination checks within supervisor (CR-like)
             # Only stop early if we have low new hits AND low quality signals
-            short_reason: str | None = None
-            if not getattr(settings, "ANCHOR_GATE_ON", True):
+            # Disable these internal early-stop heuristics when BAUG is ON (BAUG should be the sole controller)
+            if not settings.BAUG_ANCHOR_GATE_ON:
                 if (
                     round_idx > 1 and validators_passed
                 ):  # Only check for early stop if validators are OK
@@ -765,10 +1107,15 @@ class AnchorSystem:
             ):
                 # loop continues
                 prev_overlap = overlap_est
+                prev_faith = faith_est  # Update prev_faith
+                # tokens_last_round_val is already updated after LLM call
                 prev_anchor_cov = cov
                 continue
             else:
                 # STOP or ABSTAIN
+                if action == "ABSTAIN":
+                    draft = "I don't know"
+                    final_short = "i don't know"
                 break
 
         # Summary
@@ -803,4 +1150,17 @@ class AnchorSystem:
         }
 
         log_summary(qid, summary)
+
+        # Aggregate telemetry results if it's the final call for this qid (e.g., from eval runner)
+        # This check is simplistic; a more robust solution would be to call aggregation once per eval run.
+        if (
+            qid and round_idx == 1
+        ):  # Assuming qid is unique per question and this runs once per question
+            try:
+                aggregated = aggregate_telemetry_results(settings.log_dir)
+                # You can log this aggregated data to a central file or print it
+                print(f"\nBAUG Telemetry Aggregated Results: {aggregated}")
+            except Exception as e:
+                print(f"Error aggregating telemetry: {e}")
+
         return summary

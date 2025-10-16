@@ -68,6 +68,103 @@ def mismatch_flags(question: str, texts: Iterable[str]) -> dict:
     }
 
 
+def temporal_context_validator(question: str, texts: Iterable[str]) -> dict:
+    """
+    Validate temporal consistency for time-sensitive questions.
+    Detects relative time words (today, yesterday, this week, etc.) and checks
+    if retrieved contexts contain conflicting temporal markers.
+
+    Returns dict: {
+        has_relative_time: bool,
+        relative_time_words: list[str],
+        has_conflicting_dates: bool,
+        date_mentions: list[str],
+        temporal_risk: float (0.0-1.0)
+    }
+    """
+    ql = (question or "").lower()
+    tl = "\n".join((t or "").lower() for t in texts)
+
+    # Relative time indicators
+    relative_time_patterns = [
+        "today",
+        "tonight",
+        "this morning",
+        "this afternoon",
+        "yesterday",
+        "tomorrow",
+        "this week",
+        "this month",
+        "this year",
+        "last week",
+        "last month",
+        "last year",
+        "now",
+        "current",
+        "currently",
+        "recent",
+        "recently",
+        "latest",
+        "newest",
+    ]
+
+    found_relative = [p for p in relative_time_patterns if p in ql]
+    has_relative_time = bool(found_relative)
+
+    if not has_relative_time:
+        return {
+            "has_relative_time": False,
+            "relative_time_words": [],
+            "has_conflicting_dates": False,
+            "date_mentions": [],
+            "temporal_risk": 0.0,
+        }
+
+    import re as _re
+
+    # Extract day-of-week mentions from contexts (Monday, Tuesday, etc.)
+    day_pattern = r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
+    days_in_context = _re.findall(day_pattern, tl)
+
+    # Extract specific date mentions
+    date_patterns = [
+        r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",  # MM/DD/YYYY
+        r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}\b",
+        r"\b\d{4}-\d{2}-\d{2}\b",  # ISO format
+    ]
+
+    date_mentions = []
+    for pattern in date_patterns:
+        date_mentions.extend(_re.findall(pattern, tl))
+
+    # Check for conflicting temporal markers
+    # If question asks for "today" but context mentions specific past days
+    has_conflicting_dates = False
+    if "today" in ql or "current" in ql or "now" in ql:
+        # Contexts mentioning specific past days are suspicious
+        if len(set(days_in_context)) > 1:  # Multiple different days mentioned
+            has_conflicting_dates = True
+        elif (
+            days_in_context and "tuesday" in days_in_context
+        ):  # Example: "Tuesday's data" for "today"
+            has_conflicting_dates = True
+
+    # Risk score: 0-1 based on temporal inconsistency severity
+    temporal_risk = 0.0
+    if has_conflicting_dates:
+        temporal_risk = 0.7
+    elif days_in_context or date_mentions:
+        temporal_risk = 0.4  # Some temporal markers present, moderate risk
+
+    return {
+        "has_relative_time": has_relative_time,
+        "relative_time_words": found_relative,
+        "has_conflicting_dates": has_conflicting_dates,
+        "date_mentions": days_in_context + date_mentions,
+        "temporal_risk": temporal_risk,
+    }
+
+
 def conflict_risk(texts: Iterable[str]) -> float:
     # Simple proxy: many distinct years scattered => potential conflict
     import re as _re

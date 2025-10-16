@@ -244,6 +244,8 @@ def main() -> None:
         "eval.cli_judge",
         "-p",
         str(pred_path),
+        "--gold",
+        args.dataset,
         "--require-citation",
         args.judge_require_citation,
     ]

@@ -49,8 +49,8 @@ def run_cli() -> None:
     parser.add_argument(
         "--gold",
         type=Path,
-        default=Path("data/crag_questions.jsonl"),
-        help="Gold dataset JSONL (default: data/crag_questions.jsonl)",
+        default=Path("data/crag_questions_full.jsonl"),
+        help="Gold dataset JSONL (default: data/crag_questions_full.jsonl)",
     )
     parser.add_argument(
         "--out",

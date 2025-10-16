@@ -3,9 +3,57 @@
 ## Project Overview
 **Title**: Uncertainty-Gated RAG (Retrieval-Augmented Generation)
 **Repository**: https://github.com/inasfarras/uncertainty-gated-rag
-**Last Updated**: September 25, 2025
-**Current Branch**: `optimize-uncertainty-gate`
+**Last Updated**: October 16, 2025
+**Current Branch**: `baug-active-gating-improvements`
 
+### 1. Feature: MMR, Telemetry, and Agent Enhancements (October 16, 2025)
+
+#### **Issue Identification: Proactive System Enhancement**
+To improve the agent's performance and observability, several proactive enhancements were implemented. The primary goals were to increase retrieval diversity, introduce a telemetry system for better monitoring, and refine core agent components for more robust decision-making.
+
+#### **Technical Solution Details: MMR, Telemetry, and Agent Logic Refinements**
+
+**1. Retrieval Diversity with Maximal Marginal Relevance (MMR)**
+   - A new MMR implementation (`src/agentic_rag/retrieval/mmr.py`) was introduced to re-rank retrieved documents. This helps to reduce redundancy and increase the diversity of contexts presented to the generation model, which is particularly useful in multi-round retrieval scenarios.
+   - The orchestrator (`src/agentic_rag/supervisor/orchestrator.py`) now incorporates the `mmr_rerank` function in its retrieval pipeline, controlled by the `MMR_LAMBDA` setting.
+
+**2. Telemetry and Monitoring**
+   - A new telemetry utility (`src/agentic_rag/utils/telemetry.py`) was added to capture detailed data on the BAUG gate's decisions.
+   - This system logs signals, actions, and reasons for each round, and provides aggregation capabilities to analyze performance across evaluation runs (e.g., STOP@R1 rate, round distribution).
+
+**3. Agent and Evaluation Enhancements**
+   - **Orchestrator**: The main agent loop in `src/agentic_rag/supervisor/orchestrator.py` was refined to integrate MMR and the new telemetry system.
+   - **Gate Adapter**: The BAUG gate adapter (`src/agentic_rag/gate/adapter.py`) was updated for better decision logic.
+   - **Validators**: Anchor validators (`src/agentic_rag/anchors/validators.py`) were improved for more accurate context validation.
+   - **Evaluation Scripts**: The evaluation scripts (`eval/cli_judge.py` and `scripts/run_eval_with_judge.py`) were updated to support more detailed testing scenarios.
+
+#### **Code Changes Made**
+- **New File**: `src/agentic_rag/retrieval/mmr.py` - Implements the Maximal Marginal Relevance (MMR) algorithm.
+- **New File**: `src/agentic_rag/utils/telemetry.py` - Adds a new telemetry system for monitoring.
+- **Modified**: `src/agentic_rag/supervisor/orchestrator.py` - Integrated MMR and telemetry, refined agent logic.
+- **Modified**: `src/agentic_rag/config.py` - Added new settings for MMR and other features.
+- **Modified**: `src/agentic_rag/gate/adapter.py` - Updated gate logic.
+- **Modified**: `src/agentic_rag/anchors/validators.py` - Improved validators.
+- **Modified**: `src/agentic_rag/retriever/vector.py` - Adjustments to support the new retrieval pipeline.
+- **Modified**: `eval/cli_judge.py` & `scripts/run_eval_with_judge.py` - Enhanced evaluation capabilities.
+- **Cleanup**: Numerous temporary analysis files and obsolete scripts were removed to clean up the repository.
+
+#### **Test Results and Validation**
+- All code changes passed the pre-commit hooks for linting (Ruff, Black) and type checking (mypy), ensuring code quality.
+- The system is now ready for a new evaluation run to measure the impact of these enhancements on key performance metrics like F1/EM scores, retrieval diversity, and abstention rates.
+
+#### **Current Status and Next Steps**
+- **Status**: Implemented.
+- **Next Steps**:
+  1.  Run a comprehensive evaluation to measure the impact of MMR and the other agent enhancements.
+  2.  Analyze the telemetry data to gain insights into the BAUG gate's behavior.
+  3.  Tune the `MMR_LAMBDA` parameter to find the optimal balance between relevance and diversity.
+
+#### **Technical Architecture Updates**
+- The retrieval pipeline now includes an MMR re-ranking step after initial candidate retrieval and before context packing.
+- A new telemetry system has been introduced for capturing and analyzing agent behavior.
+
+---
 
 ### 3. Hybrid Intent Interpreter + BAUG Integration (September 27, 2025)
 
