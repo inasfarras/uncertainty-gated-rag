@@ -25,3 +25,4 @@ pytest-cov
 beautifulsoup4
 lxml
 requests
+matplotlib
