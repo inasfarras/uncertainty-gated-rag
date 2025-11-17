@@ -165,7 +165,11 @@ if (-not $SkipBAUG) {
 if ($ReanalyzeOnly) {
     Write-Host ""
     Write-Host "Re-analysis mode enabled. Finding latest log files for N=$N..." -ForegroundColor Yellow
-    $baseline_log = Get-ChildItem "logs/baseline" -Filter "*_baseline.jsonl" | Where-Object { $_.Name -match "_n${N}[._]" -or -not ($_.Name -match "_n\d+[._]") } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    # Find baseline log with exactly N lines
+    $baseline_log = Get-ChildItem "logs/baseline" -Filter "*_baseline.jsonl" | Where-Object {
+        $line_count = (Get-Content $_.FullName | Measure-Object -Line).Lines
+        $line_count -eq $N
+    } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($baseline_log) {
         $configs[0].LogFile = $baseline_log.FullName
         $configs[0].Status = "Complete"
@@ -174,18 +178,48 @@ if ($ReanalyzeOnly) {
         Write-Host "  [WARN] No baseline log found for N=$N" -ForegroundColor Yellow
     }
 
-    # Find latest two anchor logs
-    $anchor_logs = Get-ChildItem "logs/anchor" -Filter "*_anchor.jsonl" | Where-Object { $_.Name -match "_n${N}[._]" -or -not ($_.Name -match "_n\d+[._]") } | Sort-Object LastWriteTime -Descending | Select-Object -First 2
-    if ($anchor_logs.Count -ge 2) {
-        # This is imperfect; assumes BAUG OFF ran last. A better way would be to parse the log file for gate_on status.
-        $configs[2].LogFile = $anchor_logs[0].FullName # BAUG OFF
+    # Find anchor logs with exactly N lines, distinguish BAUG ON vs OFF by content
+    $anchor_logs = Get-ChildItem "logs/anchor" -Filter "*_anchor.jsonl" | Where-Object {
+        $line_count = (Get-Content $_.FullName | Measure-Object -Line).Lines
+        $line_count -eq $N
+    } | Sort-Object LastWriteTime -Descending
+
+    $baug_on_log = $null
+    $baug_off_log = $null
+
+    foreach ($log in $anchor_logs) {
+        try {
+            $first_line = Get-Content $log.FullName -First 1 | ConvertFrom-Json
+            $has_gate_off = $first_line.baug_reasons -contains "gate_off_max_rounds" -or $first_line.baug_reasons -contains "gate_off"
+            if ($has_gate_off -and -not $baug_off_log) {
+                $baug_off_log = $log
+            } elseif (-not $has_gate_off -and -not $baug_on_log) {
+                $baug_on_log = $log
+            }
+        } catch {
+            # Skip if we can't parse the first line
+            continue
+        }
+
+        if ($baug_on_log -and $baug_off_log) {
+            break
+        }
+    }
+
+    if ($baug_off_log) {
+        $configs[2].LogFile = $baug_off_log.FullName
         $configs[2].Status = "Complete"
-        $configs[1].LogFile = $anchor_logs[1].FullName # BAUG ON
-        $configs[1].Status = "Complete"
-        Write-Host "  [OK] Found anchor_baug_off log: $($anchor_logs[0].Name)" -ForegroundColor Green
-        Write-Host "  [OK] Found anchor_baug_on log: $($anchor_logs[1].Name)" -ForegroundColor Green
+        Write-Host "  [OK] Found anchor_baug_off log: $($baug_off_log.Name)" -ForegroundColor Green
     } else {
-        Write-Host "  [WARN] Could not find sufficient anchor logs for N=$N" -ForegroundColor Yellow
+        Write-Host "  [WARN] No BAUG OFF log found for N=$N" -ForegroundColor Yellow
+    }
+
+    if ($baug_on_log) {
+        $configs[1].LogFile = $baug_on_log.FullName
+        $configs[1].Status = "Complete"
+        Write-Host "  [OK] Found anchor_baug_on log: $($baug_on_log.Name)" -ForegroundColor Green
+    } else {
+        Write-Host "  [WARN] No BAUG ON log found for N=$N" -ForegroundColor Yellow
     }
 }
 

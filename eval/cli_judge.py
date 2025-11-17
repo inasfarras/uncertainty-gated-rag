@@ -20,7 +20,11 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
             line = line.strip()
             if not line:
                 continue
-            rows.append(json.loads(line))
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                # Skip invalid JSON lines (e.g., trailing characters)
+                continue
     return rows
 
 

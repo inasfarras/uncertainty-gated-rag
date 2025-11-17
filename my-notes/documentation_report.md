@@ -3,8 +3,56 @@
 ## Project Overview
 **Title**: Uncertainty-Gated RAG (Retrieval-Augmented Generation)
 **Repository**: https://github.com/inasfarras/uncertainty-gated-rag
-**Last Updated**: October 16, 2025
-**Current Branch**: `baug-active-gating-improvements`
+**Last Updated**: November 17, 2025
+**Current Branch**: `main`
+
+### 4. Large-Scale BAUG Full-Dataset Evaluation + Reporting Pipeline (November 17, 2025)
+
+#### **Issue Identification: Persistent Eval Noise + Missing Thesis-Ready Narrative**
+- Needed definitive evidence that BAUG preserves quality while enforcing cost budgets on the full CRAG dev set (N = 2706) after earlier small-N studies.
+- Batch-running `anchor_baug_off` kept crashing due to GPU exhaustion and JSON judge artifacts, blocking completion of the ungated anchor baseline.
+- Existing `run_baug_full_experiment.ps1` produced partial tables but lacked automatic benchmark ingest, CI-friendly CSVs, or thesis-ready prose snippets.
+- `eval/cli_judge.py` aborted whenever a single malformed JSON line appeared in merged logs, forcing manual cleanup.
+
+#### **Technical Solution Details**
+1. **Experiment Orchestration**
+   - Upgraded `run_baug_full_experiment.ps1` with config tracking, benchmark-first analysis, latency sanity checks, and a `-ReanalyzeOnly` mode that re-attaches the latest N-matched logs without rerunning inference.
+   - Added `run_baug_off_batched.ps1` (memory-safe, restartable batches with GPU resets, temp dataset shards, and structured summaries) plus a reserved-name copy (`CON`) created during early iterations.
+   - Created `merge_batch_logs.ps1` to dedupe & merge batch logs, rerun CLI judge + `eval.compute_benchmarks`, and emit Markdown summaries for CI artifacts.
+2. **Data Integrity + Judge Hardening**
+   - Patched `eval/cli_judge.py` to ignore malformed JSON lines instead of crashing, making merged logs resilient to duplicate-key artifacts.
+   - Added `temp_check.py` to scan `data/crag_questions_full.jsonl` for JSON breakage before launches.
+3. **Reporting + Thesis Assets**
+   - Generated refreshed aggregate tables/plots (`normalized_metrics.csv`, `ci_results.csv`, `real_data_paired_analysis.csv`, `figures/summary_metrics_n*.png`, Pareto charts) and curated narrative-ready snippets in `THESIS_TEXT_SNIPPETS.md`.
+   - Updated case-study and bucket reports (`reports/bucket_analysis_on_off.md`, `reports/case_denis_villeneuve.*`) with BAUG ON/OFF comparisons for thesis chapters.
+
+#### **Results and Performance Metrics**
+- **Quality parity:** Across N ∈ {100, 500, 1000, 2706}, BAUG ON vs. BAUG OFF F1 deltas stay within ±0.005 (see `normalized_metrics.csv`), and bootstrap CIs for full runs straddle zero (`ci_results.csv`, `real_data_paired_analysis.csv`).
+- **Efficiency gains:** BAUG ON trims ~1,030 tokens/question (3778 → 2752) and 0.7 rounds (2.6 → 1.9) at N = 2706 while holding EM = 0.040 and faithfulness ≈0.505.
+- **Cost-quality frontier:** Updated Pareto figures show BAUG ON dominating lower-cost regions, with ungated anchor only preferable when latency budgets are unconstrained.
+- **Bucket behavior:** New on/off bucket tables confirm BAUG reduces Low-Quality answers while preserving High-Quality counts (reports/bucket_analysis_on_off.md).
+
+#### **Code Changes Made**
+- `run_baug_full_experiment.ps1`, `run_baug_off_batched.ps1`, `merge_batch_logs.ps1`, `temp_check.py`.
+- Metrics artifacts: `ci_results.csv`, `normalized_metrics.csv`, `real_data_paired_analysis.csv`, refreshed figures under `figures/`.
+- Documentation/reporting: `THESIS_TEXT_SNIPPETS.md`, `reports/bucket_analysis_on_off.md`, `reports/case_denis_villeneuve.{md,csv}`.
+- Resilience fixes: `eval/cli_judge.py`.
+
+#### **Test Results and Validation**
+- Batched BAUG-OFF run processed the full 2,706-question dev split without GPU OOMs; merged log re-judged successfully via `python -m eval.cli_judge`.
+- Benchmark recomputation succeeded for every configuration, producing consistent counts (see `normalized_metrics.csv` vs. `logs/comparisons/full_report_n*.md`).
+- Manual spot-checks of representative questions (Denis Villeneuve case study) confirm judge scores match narrative claims.
+
+#### **Current Status and Next Steps**
+- **Status:** Full-scale BAUG vs. baseline comparison is reproducible end-to-end with CI-friendly artifacts and thesis-ready copy.
+- **Next Steps:**
+  1. Automate baseline batched runs (similar script as BAUG OFF) to guarantee identical hardware envelopes.
+  2. Extend `THESIS_TEXT_SNIPPETS.md` with citations/figure references before final drafting.
+  3. Integrate bootstrap CI plots + table exports into `BAUG_Eval_Analysis.ipynb` for appendix material.
+
+#### **Technical Architecture Updates**
+- Experiment pipeline now branches into (a) batched inference (PowerShell), (b) merged-log LLM judging, and (c) benchmark-driven normalization feeding CSVs/figures/snippets.
+- Judge CLI hardened to accept imperfect logs, decoupling evaluation stability from upstream logging quirks.
 
 ### 1. Feature: MMR, Telemetry, and Agent Enhancements (October 16, 2025)
 
